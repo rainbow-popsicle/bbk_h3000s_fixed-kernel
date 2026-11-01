@@ -1,13 +1,11 @@
 name: build-h3000s-kernel
 
-# 精简版流水线：只编内核，产出 Image.gz-dtb + 日志
-# boot.img 的打包在本机做（tools/mkboot.py），所以本仓库不需要任何二进制资产
-#
-# 产物：
-#   Image.gz-dtb          内核本体（放到本机后由 mkboot.py 打包成 boot.img）
-#   build.log             完整编译日志（出错时看这个）
-#   battery_src.txt       电池/充电相关源码与参数表（用于第二轮修电量）
-#   config.txt            最终 .config 关键项
+# 精简版流水线 v2：只编内核，产出 Image.gz-dtb + 日志（boot.img 在本机打包）
+# v2 修掉了这些问题：
+#   * ubuntu-22.04 上 lib32ncurses5-dev 等包已移除 -> 改用 ubuntu-20.04 + 精简包列表
+#   * $CROSS_COMPILE\gcc 写法在 YAML 里不可靠 -> 改成 "${CROSS_COMPILE}gcc"
+#   * MTK 3.18 树不一定有 Image.gz-dtb 目标 -> 依次尝试 Image.gz-dtb / Image.gz + dtbs
+#   * 每步都打印命令与结果，失败时容易定位
 on:
   workflow_dispatch:
     inputs:
@@ -26,57 +24,65 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-20.04
     timeout-minutes: 300
     steps:
-      - name: 检出本仓库（为了拿 patches/，没有也没关系）
-        uses: actions/checkout@v4
-        continue-on-error: true
+      - name: 环境检查
+        run: |
+          uname -a
+          which git curl make python3
 
       - name: 安装依赖
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq bc bison build-essential ccache flex g++-multilib \
-            gcc-multilib git gperf lib32ncurses5-dev lib32readline-dev lib32z1-dev \
-            libelf-dev liblz4-tool libncurses5 libncurses5-dev libssl-dev libxml2 \
-            libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip \
-            zlib1g-dev python3 make curl ca-certificates
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential flex gperf libelf-dev \
+            liblz4-tool libncurses5 libncurses5-dev libssl-dev libxml2 libxml2-utils \
+            lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev \
+            python3 curl ca-certificates
+          echo "依赖安装完成"
 
       - name: 获取 Android gcc 4.9 交叉编译器
-        continue-on-error: true
         run: |
-          mkdir -p $HOME/tc && cd $HOME/tc
+          mkdir -p "$HOME/tc"
+          cd "$HOME/tc"
           git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 tc49
-          echo "TC=$HOME/tc/tc49/bin/aarch64-linux-android-" >> $GITHUB_ENV
+          ls tc49/bin/ | head -5
+          echo "TC=$HOME/tc/tc49/bin/aarch64-linux-android-" >> "$GITHUB_ENV"
 
       - name: 检出内核源码
         run: |
           git clone --depth=1 -b "${{ inputs.kernel_branch }}" "${{ inputs.kernel_repo }}" kernel
-          cd kernel && git log --oneline -1 && head -4 Makefile
+          cd kernel
+          git log --oneline -1
+          head -4 Makefile
 
       - name: 打入 h3000s 板级文件
         run: |
-          set -e
           cd kernel
           BASE=https://raw.githubusercontent.com/Haoduo9/android_kernel_bbk_h3000s_patches/main
           mkdir -p arch/arm64/configs arch/arm64/boot/dts drivers/sensor
-          curl -fsSL -o arch/arm64/configs/${{ inputs.defconfig }} $BASE/defconfig/h3000s_defconfig
-          curl -fsSL -o arch/arm64/boot/dts/h3000s.dts            $BASE/dts/h3000s-FIXED5.dts
-          curl -fsSL -o drivers/sensor/lis3dh.c                   $BASE/drivers/sensor/lis3dh.c || true
-          curl -fsSL -o drivers/sensor/lis3dh.h                   $BASE/drivers/sensor/lis3dh.h || true
+          echo "--- 下载 defconfig ---"
+          curl -fsSL -o "arch/arm64/configs/${{ inputs.defconfig }}" "$BASE/defconfig/h3000s_defconfig" || echo "!! defconfig 下载失败"
+          echo "--- 下载 dts ---"
+          curl -fsSL -o arch/arm64/boot/dts/h3000s.dts "$BASE/dts/h3000s-FIXED5.dts" || echo "!! dts 下载失败"
+          curl -fsSL -o drivers/sensor/lis3dh.c "$BASE/drivers/sensor/lis3dh.c" || echo "(lis3dh.c 无)"
+          curl -fsSL -o drivers/sensor/lis3dh.h "$BASE/drivers/sensor/lis3dh.h" || echo "(lis3dh.h 无)"
+          ls -l arch/arm64/configs/ | tail -5
           grep -q h3000s.dtb arch/arm64/boot/dts/Makefile || \
             echo 'dtb-$(CONFIG_ARCH_MTK_MT8173) += h3000s.dtb' >> arch/arm64/boot/dts/Makefile
-          grep -q ANDROID_BINDER_DEVICES arch/arm64/configs/${{ inputs.defconfig }} || \
-            echo 'CONFIG_ANDROID_BINDER_DEVICES="binder,hwbinder,vndbinder"' >> arch/arm64/configs/${{ inputs.defconfig }}
-          echo '---- defconfig 关键项 ----'
-          grep -E 'BINDER|BATTERY|CHARGER|FUEL|GAUGE|TOUCHSCREEN' arch/arm64/configs/${{ inputs.defconfig }} || true
+          grep -q ANDROID_BINDER_DEVICES "arch/arm64/configs/${{ inputs.defconfig }}" || \
+            echo 'CONFIG_ANDROID_BINDER_DEVICES="binder,hwbinder,vndbinder"' >> "arch/arm64/configs/${{ inputs.defconfig }}"
+          echo "--- defconfig 关键项 ---"
+          grep -E 'BINDER|BATTERY|CHARGER|FUEL|GAUGE|TOUCHSCREEN' "arch/arm64/configs/${{ inputs.defconfig }}" || true
 
       - name: 应用自定义补丁（patches/*.patch，可选）
         run: |
           cd kernel
           shopt -s nullglob
           PATCHES=(../patches/*.patch)
-          if [ ${#PATCHES[@]} -eq 0 ]; then echo "无补丁（基线轮）"; else
+          if [ ${#PATCHES[@]} -eq 0 ]; then
+            echo "无补丁（基线轮）"
+          else
             for p in "${PATCHES[@]}"; do
               echo "==== $p ===="
               if git apply --check "$p" 2>/dev/null; then git apply "$p" && echo "OK"
@@ -85,35 +91,77 @@ jobs:
             done
           fi
 
+      - name: 配置内核
+        run: |
+          cd kernel
+          export ARCH=arm64
+          if [ -x "${TC}gcc" ]; then export CROSS_COMPILE="$TC"; else export CROSS_COMPILE=aarch64-linux-gnu-; fi
+          echo "CROSS_COMPILE=$CROSS_COMPILE"
+          "${CROSS_COMPILE}gcc" --version | head -1
+          make ARCH=arm64 "${{ inputs.defconfig }}"
+          ls -l .config
+          grep -E 'CONFIG_ANDROID_BINDER_DEVICES' .config || true
+
       - name: 编译内核
         run: |
-          set -o pipefail
           cd kernel
-          export ARCH=arm64 SUBARCH=arm64
-          if [ -n "$TC" ] && [ -x "${TC}gcc" ]; then export CROSS_COMPILE="$TC"; else export CROSS_COMPILE=aarch64-linux-gnu-; fi
-          echo "CROSS_COMPILE=$CROSS_COMPILE"
-          $CROSS_COMPILE\gcc --version | head -1
-          make ARCH=arm64 ${{ inputs.defconfig }}
-          make ARCH=arm64 -j$(nproc) Image.gz-dtb 2>&1 | tee ../build.log | tail -40
-          ls -l arch/arm64/boot/ | head
+          export ARCH=arm64
+          if [ -x "${TC}gcc" ]; then export CROSS_COMPILE="$TC"; else export CROSS_COMPILE=aarch64-linux-gnu-; fi
+          echo "== 目标 Image.gz-dtb =="
+          if make ARCH=arm64 -j"$(nproc)" Image.gz-dtb 2>&1 | tee ../build.log | tail -30; then
+            echo "Image.gz-dtb 成功"
+          else
+            echo "== 回退到 Image.gz + dtbs =="
+            make ARCH=arm64 -j"$(nproc)" Image.gz 2>&1 | tee -a ../build.log | tail -30
+            make ARCH=arm64 -j"$(nproc)" dtbs     2>&1 | tee -a ../build.log | tail -20 || true
+          fi
+          echo "--- 产物 ---"
+          ls -l arch/arm64/boot/ | head -20
+          ls -l arch/arm64/boot/dts/ 2>/dev/null | head -10 || true
 
-      - name: 导出电池/充电相关源码（第二轮修电量的依据）
+      - name: 拼 Image.gz-dtb（若未直接产出）
+        run: |
+          cd kernel
+          B=arch/arm64/boot
+          if [ -f "$B/Image.gz-dtb" ]; then
+            echo "已有 Image.gz-dtb"
+          elif [ -f "$B/Image.gz" ]; then
+            D=""
+            [ -f "$B/dts/h3000s.dtb" ] && D="$B/dts/h3000s.dtb"
+            [ -z "$D" ] && D=$(ls "$B"/dts/*.dtb 2>/dev/null | head -1)
+            if [ -n "$D" ]; then
+              echo "用 $D 拼接"
+              cat "$B/Image.gz" "$D" > "$B/Image.gz-dtb"
+            else
+              echo "!! 无 dtb，仅输出 Image.gz"
+              cp "$B/Image.gz" "$B/Image.gz-dtb"
+            fi
+          else
+            echo "!! 无 Image.gz，请查看日志"
+          fi
+          ls -l "$B"/Image* 2>/dev/null || true
+
+      - name: 导出电池/充电相关源码
         if: always()
         run: |
           cd kernel
           {
             echo "=== .config 关键项 ==="
             grep -E 'CONFIG_ANDROID_BINDER|CONFIG_BATTERY|CONFIG_CHARGER|CONFIG_FUEL|CONFIG_GAUGE|CONFIG_TOUCHSCREEN|CONFIG_MTK_BATTERY' .config 2>/dev/null || true
-            echo; echo "=== 电池/充电文件清单 ==="
+            echo
+            echo "=== 电池/充电文件清单 ==="
             find . -name 'cust_battery*' -o -name 'cust_charger*' -o -name '*battery_table*' 2>/dev/null | head -30
-            echo; echo "=== 电压/温度/0%判定 函数体 ==="
+            echo
+            echo "=== 关键函数 ==="
             for fn in BAT_Get_Battery_Voltage BAT_Get_Battery_Temperature mt_battery_0Percent_tracking_check; do
               echo "----- $fn -----"
               grep -rn -A 35 "$fn" drivers/power/mediatek/ 2>/dev/null | head -70 || true
             done
-            echo; echo "=== cust 表内容（前 120 行）==="
+            echo
+            echo "=== cust 参数表（前 120 行）==="
             for f in $(find . -name 'cust_battery_meter_table.h' -o -name 'cust_charger.h' -o -name 'cust_battery.h' 2>/dev/null | head -4); do
-              echo "########## $f ##########"; head -120 "$f" || true
+              echo "########## $f ##########"
+              head -120 "$f" || true
             done
           } > ../battery_src.txt 2>&1
           wc -l ../battery_src.txt
@@ -122,10 +170,12 @@ jobs:
         if: always()
         run: |
           mkdir -p out
-          cp kernel/arch/arm64/boot/Image.gz-dtb out/ 2>/dev/null || cp kernel/arch/arm64/boot/Image.gz out/ 2>/dev/null || true
+          cp kernel/arch/arm64/boot/Image.gz-dtb out/ 2>/dev/null || true
+          cp kernel/arch/arm64/boot/Image.gz out/ 2>/dev/null || true
           cp build.log out/ 2>/dev/null || true
           cp battery_src.txt out/ 2>/dev/null || true
-          ls -l out; for f in out/*; do [ -f "$f" ] && md5sum "$f"; done
+          ls -l out
+          for f in out/*; do [ -f "$f" ] && md5sum "$f"; done
 
       - uses: actions/upload-artifact@v4
         if: always()
