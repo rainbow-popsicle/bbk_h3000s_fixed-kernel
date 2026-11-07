@@ -1,0 +1,162 @@
+#!/sbin/sh
+#
+# 步步高 S3 Pro —— 只读取证模块（TWRP）
+#
+# 这个脚本只做三件事：
+#   1. 把 boot / recovery / lk / preloader 等小分区 **读** 到 /sdcard/s3pro
+#   2. 在设备上直接解析 boot.img，打印内核版本（不依赖电脑）
+#   3. 尝试提取内核内嵌的 .config —— 如果原厂没开 CONFIG_IKCONFIG，就明确写"没有"
+#
+# 它从不写分区、不格式化、不清数据。删掉这个 zip 就等于没发生过。
+#
+# 用法（TWRP）：Install → 选 zip → 滑动确认；结束后去 /sdcard/s3pro 取文件。
+
+OUT=/sdcard/s3pro
+FALLBACK=/tmp/s3pro
+
+ui_print() {
+    echo "ui_print $*"
+    echo "ui_print"
+}
+
+# ---------------------------------------------------------------- 输出目录
+if ! mkdir -p "$OUT" 2>/dev/null || [ ! -w "$OUT" ]; then
+    ui_print "!! /sdcard 不可写，改用 $FALLBACK"
+    OUT="$FALLBACK"
+    mkdir -p "$OUT" 2>/dev/null || {
+        ui_print "!! 无法创建输出目录，退出（什么都没改）"
+        exit 1
+    }
+fi
+ui_print "输出目录：$OUT"
+
+# ---------------------------------------------------------------- 找分区
+find_part() {
+    name="$1"
+    for base in \
+        /dev/block/bootdevice/by-name \
+        /dev/block/by-name \
+        /dev/block/platform/mtk-msdc.0/by-name \
+        /dev/block/platform/mtk-msdc.0/11230000.msdc0/by-name \
+        /dev/block/platform/soc/by-name
+    do
+        if [ -e "$base/$name" ]; then
+            echo "$base/$name"
+            return 0
+        fi
+    done
+    if command -v find >/dev/null 2>&1; then
+        found=$(find /dev/block/platform -name "$name" 2>/dev/null | head -n 1)
+        if [ -n "$found" ]; then
+            echo "$found"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# ---------------------------------------------------------------- dump 小分区
+# 只读！用 dd 的 count 限制上限，防止误读超大分区把 sdcard 塞满
+LIMIT_MB=64
+
+dump_part() {
+    name="$1"
+    limit="$2"
+    node=$(find_part "$name") || {
+        ui_print "  $name: 找不到分区节点，跳过"
+        echo "$name: 缺失" >> "$OUT/report.txt"
+        return 1
+    }
+    size=$(blockdev --getsize64 "$node" 2>/dev/null || echo 0)
+    if [ "$size" -gt $((limit * 1024 * 1024)) ] 2>/dev/null; then
+        ui_print "  $name: ${size} 字节，超过 ${limit}MB 上限，跳过"
+        echo "$name: 跳过（${size} 字节过大）" >> "$OUT/report.txt"
+        return 1
+    fi
+    ui_print "  $name: 读 $size 字节"
+    dd if="$node" of="$OUT/$name.img" bs=4096 2>/dev/null
+    echo "$name: 已读取（$size 字节）<- $node" >> "$OUT/report.txt"
+    return 0
+}
+
+ui_print "== 开始读取分区（只读）=="
+echo "=== 步步高 S3 Pro 取证报告 ===" > "$OUT/report.txt"
+echo "生成时间: $(date 2>/dev/null)" >> "$OUT/report.txt"
+echo "TWRP 内核: $(uname -a 2>/dev/null)" >> "$OUT/report.txt"
+echo >> "$OUT/report.txt"
+
+dump_part boot 64
+dump_part recovery 64
+dump_part lk 8
+dump_part preloader 8
+dump_part logo 8
+dump_part secro 8
+dump_part tz 8
+dump_part vbmeta 8
+dump_part dtbo 8
+dump_part misc 4
+
+# ---------------------------------------------------------------- 在设备上解析内核版本
+ui_print "== 解析内核版本 =="
+BOOT="$OUT/boot.img"
+if [ -f "$BOOT" ]; then
+    # 标准布局：内核在 2048 偏移；MTK 布局：2048+512
+    for skip in 2048 2560 1024 0; do
+        ver=$(dd if="$BOOT" bs=1 skip="$skip" count=4194304 2>/dev/null \
+              | gzip -dc 2>/dev/null \
+              | strings 2>/dev/null \
+              | grep -m 1 'Linux version')
+        if [ -n "$ver" ]; then
+            ui_print "  内核: $ver"
+            echo "内核版本: $ver" >> "$OUT/report.txt"
+            echo "内核偏移: $skip" >> "$OUT/report.txt"
+            break
+        fi
+    done
+    if [ -z "$ver" ]; then
+        ui_print "  未能在设备上解出版本（没关系，交给电脑）"
+        echo "内核版本: 设备上未解析出来" >> "$OUT/report.txt"
+    fi
+
+    # ------------------------------------------------------------ 找内嵌 config
+    has_ikcfg=0
+    if grep -q "IKCFG_ST" "$BOOT" 2>/dev/null; then
+        has_ikcfg=1
+    fi
+    if [ "$has_ikcfg" = "1" ]; then
+        ui_print "  内核里有 IKCFG 标记，尝试提取 .config"
+        off=$(grep -abo "IKCFG_ST" "$BOOT" 2>/dev/null | head -n 1 | cut -d: -f1)
+        if [ -n "$off" ]; then
+            start=$((off + 8))
+            dd if="$BOOT" bs=1 skip="$start" count=2097152 2>/dev/null \
+                | gzip -dc > "$OUT/config.txt" 2>/dev/null
+            if [ -s "$OUT/config.txt" ] && grep -q '^CONFIG_' "$OUT/config.txt" 2>/dev/null; then
+                ui_print "  config.txt 已生成"
+                echo "内嵌 config: 已提取 -> config.txt" >> "$OUT/report.txt"
+            else
+                ui_print "  提取失败（压缩格式不是 gzip），交给电脑处理"
+                echo "内嵌 config: 有标记但设备上解不开" >> "$OUT/report.txt"
+                rm -f "$OUT/config.txt"
+            fi
+        fi
+    else
+        ui_print "  这个内核没有内嵌 config（CONFIG_IKCONFIG 未开启）"
+        echo "内嵌 config: 没有（原厂编译时没开 CONFIG_IKCONFIG）" >> "$OUT/report.txt"
+        echo "说明: 这种情况下 /proc/config.gz 不存在，root/TWRP 都取不到，" >> "$OUT/report.txt"
+        echo "      只能拿公开树的 defconfig 当基线，或者按二进制线索反推。" >> "$OUT/report.txt"
+    fi
+fi
+
+# ---------------------------------------------------------------- 校验和
+if command -v sha256sum >/dev/null 2>&1; then
+    ( cd "$OUT" && sha256sum *.img > sha256.txt 2>/dev/null )
+    ui_print "已生成 sha256.txt"
+fi
+
+# ---------------------------------------------------------------- 收尾
+ui_print "== 完成，文件在 $OUT =="
+ls -l "$OUT" > "$OUT/listing.txt" 2>/dev/null
+sync
+
+ui_print "什么都没写入分区，重启即可回到系统。"
+exit 0

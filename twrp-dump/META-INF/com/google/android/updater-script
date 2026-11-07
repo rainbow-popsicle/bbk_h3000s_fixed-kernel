@@ -1,0 +1,2 @@
+# 这个 zip 的 update-binary 是 shell 脚本（不是 edify），
+# TWRP 会直接执行它；本文件只是为了满足 recovery 的格式检查。
