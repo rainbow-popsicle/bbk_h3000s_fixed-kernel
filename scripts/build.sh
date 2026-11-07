@@ -46,27 +46,93 @@ gcc --version | head -1
 
 # --------------------------------------------------------------------------- #
 step "2/6 交叉工具链（$TOOLCHAIN）"
-if [ "$TOOLCHAIN" = "gcc49" ]; then
+# Google 那支 aarch64 GCC 4.9 是 32 位宿主程序，在 ubuntu-24.04 上经常因为
+# 缺 ld-linux.so.2 报 "No such file or directory"（看起来像文件不存在，其实是加载器缺失）。
+# 这里做成"自动挑一支能跑的"：先本地已有的，再 Google，再 32 位库，最后 Linaro（64 位宿主）。
+try_cc() {
+    CC_BIN="$1"
+    [ -x "$CC_BIN" ] || return 1
+    "$CC_BIN" --version >/dev/null 2>&1
+}
+
+report_cc() {
+    echo "  候选: $1"
+    if [ -x "$1" ]; then
+        file "$1" 2>/dev/null | sed 's/^/    file: /' || true
+        ldd "$1" 2>&1 | grep -i 'not found' | sed 's/^/    ldd : /' || true
+    else
+        echo "    （文件不存在）"
+    fi
+}
+
+setup_toolchain() {
+    # ① 工程内已有的工具链目录
+    if [ -d "$WORK/toolchain" ] && try_cc "$WORK/toolchain/bin/aarch64-linux-android-gcc"; then
+        export CROSS_COMPILE="$WORK/toolchain/bin/aarch64-linux-android-"
+        echo "复用已有工具链: $WORK/toolchain"
+        return 0
+    fi
+
+    # ② Google 预编译 GCC 4.9
     TC="$WORK/toolchain"
     if [ ! -x "$TC/bin/aarch64-linux-android-gcc" ]; then
         rm -rf "$TC"
-        # Google 官方预编译 aarch64 GCC 4.9：3.18/4.4 这类老内核用它最省事，
-        # 换成发行版 GCC 12+ 会因为一堆新增警告直接编译失败。
+        echo "克隆 Google 预编译 GCC 4.9（32 位宿主）……"
         git clone --depth 1 \
             https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
-            "$TC"
+            "$TC" || warn "克隆失败，跳过这支"
     fi
-    export CROSS_COMPILE="$TC/bin/aarch64-linux-android-"
-    export PATH="$TC/bin:$PATH"
-    # AOSP 的 prebuilts 里这支 gcc 有时是 32 位可执行文件，缺 i386 运行库会报
-    # "No such file or directory"（看起来像文件不存在，其实是 loader 缺）
-    if ! "$TC/bin/aarch64-linux-android-gcc" --version >/dev/null 2>&1; then
-        warn "工具链跑不起来，安装 32 位运行库后重试"
-        sudo dpkg --add-architecture i386
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq libc6:i386 libstdc++6:i386 zlib1g:i386 >/dev/null
+    if try_cc "$TC/bin/aarch64-linux-android-gcc"; then
+        export CROSS_COMPILE="$TC/bin/aarch64-linux-android-"
+        return 0
     fi
-    "$TC/bin/aarch64-linux-android-gcc" --version | head -1
+    report_cc "$TC/bin/aarch64-linux-android-gcc"
+
+    # ③ 补 32 位运行库后再试
+    warn "32 位工具链跑不起来，尝试补齐 i386 运行库"
+    sudo dpkg --add-architecture i386 || true
+    sudo apt-get update -qq || true
+    sudo apt-get install -y libc6:i386 libstdc++6:i386 zlib1g:i386 libncurses5:i386 || true
+    if try_cc "$TC/bin/aarch64-linux-android-gcc"; then
+        export CROSS_COMPILE="$TC/bin/aarch64-linux-android-"
+        echo "补库后可用"
+        return 0
+    fi
+    ldd "$TC/bin/aarch64-linux-android-gcc" 2>&1 | sed 's/^/    ldd : /' || true
+
+    # ④ Linaro（x86_64 宿主，不需要 32 位库）——多试几个版本
+    LIN="$WORK/linaro"
+    rm -rf "$LIN"; mkdir -p "$LIN"
+    for url in \
+        https://releases.linaro.org/components/toolchain/binaries/4.9-2017.01/aarch64-linux-gnu/gcc-linaro-4.9.4-2017.01-x86_64_aarch64-linux-gnu.tar.xz \
+        https://releases.linaro.org/components/toolchain/binaries/4.9-2016.02/aarch64-linux-gnu/gcc-linaro-4.9.4-2016.02-x86_64_aarch64-linux-gnu.tar.xz \
+        https://releases.linaro.org/components/toolchain/binaries/6.5-2018.12/aarch64-linux-gnu/gcc-linaro-6.5.0-2018.12-x86_64_aarch64-linux-gnu.tar.xz
+    do
+        echo "尝试 Linaro: $url"
+        if curl -fL --retry 2 -o "$WORK/linaro.tar.xz" "$url" 2>/dev/null; then
+            if tar -xJf "$WORK/linaro.tar.xz" -C "$LIN" --strip-components=1 2>/dev/null; then
+                if try_cc "$LIN/bin/aarch64-linux-gnu-gcc"; then
+                    export CROSS_COMPILE="$LIN/bin/aarch64-linux-gnu-"
+                    echo "改用 Linaro 工具链: $("$LIN/bin/aarch64-linux-gnu-gcc" --version | head -1)"
+                    return 0
+                fi
+            fi
+        fi
+    done
+
+    return 1
+}
+
+if [ "$TOOLCHAIN" = "gcc49" ]; then
+    if ! setup_toolchain; then
+        warn "所有 64/32 位工具链都跑不起来，退回发行版工具链（大概率编不过老内核）"
+        export CROSS_COMPILE="aarch64-linux-gnu-"
+    fi
+    if command -v "${CROSS_COMPILE}gcc" >/dev/null 2>&1; then
+        "${CROSS_COMPILE}gcc" --version | head -1
+    else
+        warn "选定的交叉编译器不在 PATH 里：${CROSS_COMPILE}gcc"
+    fi
 else
     export CROSS_COMPILE="aarch64-linux-gnu-"
     warn "使用发行版工具链，老内核大概率编不过；仅在你清楚原因时使用"
