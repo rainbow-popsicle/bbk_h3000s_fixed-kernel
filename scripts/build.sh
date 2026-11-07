@@ -177,9 +177,13 @@ done
 # GCC 10 起默认 -fno-common，而 dtc 里 yylloc 在 lexer/parser 各定义了一次，
 # 旧的 -fcommon 会把它们合并，新的直接链接报 multiple definition。
 # 两步一起做：给宿主工具加回 -fcommon，并把 lexer 里的那份改成 extern。
-if grep -q '^HOSTCFLAGS   = -Wall' Makefile; then
-    sed -i 's/^HOSTCFLAGS   = -Wall/HOSTCFLAGS   = -fcommon -Wall/' Makefile
-    echo "已给宿主工具加 -fcommon（兼容 GCC 10+）"
+if grep -q '^HOSTCFLAGS   = ' Makefile; then
+    # -fcommon ：GCC 10+ 取消了 -fcommon 默认值，老 dtc 会 yylloc 重复定义
+    # -fno-PIE / -no-pie ：Ubuntu 新版默认为可执行文件开 PIE，
+    #                      而老内核的宿主工具（fixdep/modpost）不是 PIC 的，
+    #                      链接会报 "relocation R_X86_64_32 ... can not be used when making a PIE object"
+    sed -i 's/^HOSTCFLAGS   = /HOSTCFLAGS   = -fcommon -fno-PIE -no-pie /' Makefile
+    echo "已给宿主工具加兼容开关：$(grep '^HOSTCFLAGS   = ' Makefile | head -1)"
 fi
 for f in scripts/dtc/dtc-lexer.lex.c scripts/dtc/dtc-lexer.l; do
     if [ -f "$f" ] && grep -qE '^[[:space:]]*(YYLTYPE|int)[[:space:]]+yylloc;' "$f"; then
@@ -277,6 +281,34 @@ else
 fi
 make ARCH=arm64 olddefconfig
 grep -E '^CONFIG_LOCALVERSION' .config || true
+
+# 把和上次链接失败相关的开关打出来，方便下一轮定位到底缺哪个提供者
+echo "--- 电池 / SDIO / vcore 相关开关 ---"
+grep -E '^CONFIG_MTK_(BATTERY|SDIO|VCORE|CHARGER|SMART)' .config || echo "  （一个都没有）"
+
+# 社区树的 h3000s_defconfig 不完整：链接时 bm_ctrl_cmd / sdio_* 没有实现者。
+# 先注入 weak 占位让内核能链接出来（weak 会被真实实现覆盖），
+# 目的是先拿到一个能开机的东西，再回头把配置补对。
+# 不想要这个行为就设 ALLOW_STUBS=0。
+if [ "${ALLOW_STUBS:-1}" = "1" ]; then
+    STUB_DIR="drivers/misc/mediatek"
+    if [ -d "$STUB_DIR" ]; then
+        cat > "$STUB_DIR/h3000s_stubs.c" <<'STUBEOF'
+/*
+ * 由 build.sh 自动生成的临时占位。
+ * 原因：h3000s_defconfig 没有启用 bm_ctrl_cmd / sdio_start_ot_transfer 的提供者，
+ * 链接 vmlinux 时报 undefined reference。weak 符号可被真实实现覆盖。
+ */
+__attribute__((weak)) int bm_ctrl_cmd(void *arg) { (void)arg; return 0; }
+__attribute__((weak)) int sdio_stop_transfer(void *arg) { (void)arg; return 0; }
+__attribute__((weak)) int sdio_start_ot_transfer(void *arg) { (void)arg; return 0; }
+STUBEOF
+        if ! grep -q 'h3000s_stubs.o' "$STUB_DIR/Makefile" 2>/dev/null; then
+            echo 'obj-y += h3000s_stubs.o' >> "$STUB_DIR/Makefile"
+        fi
+        echo "已注入 weak 占位：$STUB_DIR/h3000s_stubs.c"
+    fi
+fi
 
 # --------------------------------------------------------------------------- #
 # 干跑：只验证"工具链 + 源码 + 配置"这三段，几分钟出结果，不耗时编译。
