@@ -40,8 +40,9 @@ die()  { printf '\033[1;31m[error] %s\033[0m\n' "$*" >&2; exit 1; }
 step "1/6 主机依赖"
 sudo apt-get update -qq
 sudo apt-get install -y -qq --no-install-recommends \
-    build-essential bc bison flex libssl-dev libelf-dev \
-    python3 zip unzip xz-utils lz4 device-tree-compiler cpio rsync >/dev/null
+    build-essential bc bison flex libssl-dev libelf-dev file curl \
+    python3 zip unzip xz-utils lz4 device-tree-compiler cpio rsync \
+    gcc-aarch64-linux-gnu >/dev/null || warn "部分依赖安装失败，继续"
 gcc --version | head -1
 
 # --------------------------------------------------------------------------- #
@@ -73,14 +74,20 @@ setup_toolchain() {
         return 0
     fi
 
-    # ② Google 预编译 GCC 4.9
+    # ② AOSP / LineageOS 的预编译 GCC 4.9（多源，谁通用谁）
     TC="$WORK/toolchain"
     if [ ! -x "$TC/bin/aarch64-linux-android-gcc" ]; then
         rm -rf "$TC"
-        echo "克隆 Google 预编译 GCC 4.9（32 位宿主）……"
-        git clone --depth 1 \
-            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
-            "$TC" || warn "克隆失败，跳过这支"
+        for repo in \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \
+            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
+        do
+            echo "克隆预编译 GCC 4.9：$repo"
+            if git clone --depth 1 "$repo" "$TC" 2>&1 | tail -3; then
+                [ -x "$TC/bin/aarch64-linux-android-gcc" ] && break
+            fi
+            rm -rf "$TC"
+        done
     fi
     if try_cc "$TC/bin/aarch64-linux-android-gcc"; then
         export CROSS_COMPILE="$TC/bin/aarch64-linux-android-"
@@ -88,11 +95,14 @@ setup_toolchain() {
     fi
     report_cc "$TC/bin/aarch64-linux-android-gcc"
 
-    # ③ 补 32 位运行库后再试
+    # ③ 补 32 位运行库后再试（这里不能再 || true 吞错了，
+    #    上一次失败就是因为安装错误被静默掉）
     warn "32 位工具链跑不起来，尝试补齐 i386 运行库"
-    sudo dpkg --add-architecture i386 || true
-    sudo apt-get update -qq || true
-    sudo apt-get install -y libc6:i386 libstdc++6:i386 zlib1g:i386 libncurses5:i386 || true
+    sudo dpkg --add-architecture i386 || warn "add-architecture 失败"
+    sudo apt-get update -qq || warn "apt update 失败"
+    echo "外来架构：$(dpkg --print-foreign-architectures | tr '\n' ' ')"
+    sudo apt-get install -y libc6:i386 libstdc++6:i386 zlib1g:i386 \
+        || warn "i386 运行库安装失败（继续尝试下一支）"
     if try_cc "$TC/bin/aarch64-linux-android-gcc"; then
         export CROSS_COMPILE="$TC/bin/aarch64-linux-android-"
         echo "补库后可用"
@@ -125,8 +135,7 @@ setup_toolchain() {
 
 if [ "$TOOLCHAIN" = "gcc49" ]; then
     if ! setup_toolchain; then
-        warn "所有 64/32 位工具链都跑不起来，退回发行版工具链（大概率编不过老内核）"
-        export CROSS_COMPILE="aarch64-linux-gnu-"
+        die "没有可用的交叉工具链。把上面的 file/ldd/Linaro 输出发出来，我来换源"
     fi
     if command -v "${CROSS_COMPILE}gcc" >/dev/null 2>&1; then
         "${CROSS_COMPILE}gcc" --version | head -1
@@ -147,6 +156,22 @@ if [ ! -d "$SRC/.git" ]; then
 fi
 cd "$SRC"
 echo "HEAD: $(git log -1 --format='%h %s' 2>/dev/null || echo '(无 git 信息)')"
+
+# 这棵 H3000S 树把 WireGuard 之类做成了子模块，--depth 1 克隆不会带下来。
+# 不处理的话 kconfig 阶段会报 can't open file "net/wireguard/Kconfig" 直接退出。
+if [ -f .gitmodules ]; then
+    echo "检测到子模块，尝试初始化……"
+    git submodule update --init --recursive --depth 1 2>&1 | tail -5 \
+        || warn "子模块初始化失败"
+fi
+# 兜底：Kconfig 引用但文件不存在时，补一个空占位，别让配置阶段卡死
+for kfile in net/wireguard/Kconfig; do
+    if grep -q "$kfile" net/Kconfig 2>/dev/null && [ ! -f "$kfile" ]; then
+        mkdir -p "$(dirname "$kfile")"
+        : > "$kfile"
+        warn "$kfile 缺失（子模块没同步），已补空占位"
+    fi
+done
 if [ -f Makefile ]; then
     echo "版本: $(grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) =' Makefile | awk '{print $3}' | paste -sd.)"
 fi
@@ -174,7 +199,14 @@ if [ -f "$INPUT_CONFIG" ]; then
 fi
 
 if [ -f "$STOCK_BOOT" ]; then
-    echo "发现原厂 boot.img，先做体检（同时用于对齐 release 版本）"
+    BOOT_SIZE=$(stat -c%s "$STOCK_BOOT" || echo 0)
+    echo "发现 boot.img（$BOOT_SIZE 字节），先做体检（同时用于对齐 release 版本）"
+    # 典型大小：原厂 16,777,216；作者成品内核 7~8MB。低于 1MB 一定是传错了。
+    if [ "$BOOT_SIZE" -lt 1048576 ]; then
+        die "boot.img 只有 $BOOT_SIZE 字节，明显不对（正常是 7~16MB）。
+     多半是上传失败：到 GitHub 上看 inputs/boot.img 显示的大小，
+     应该是 7.6 MB 左右。重新用 Add file → Upload files 传一遍。"
+    fi
     "$PY" "$ROOT/scripts/bootimg.py" info "$STOCK_BOOT" | tee "$STOCK_INFO" || true
     STOCK_VER="$(grep -o 'Linux version [^ ]*' "$STOCK_INFO" | head -1 | awk '{print $3}' || true)"
     echo "原厂内核 release: ${STOCK_VER:-未知}"
