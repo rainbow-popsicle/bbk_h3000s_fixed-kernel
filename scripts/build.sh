@@ -172,6 +172,21 @@ for kfile in net/wireguard/Kconfig; do
         warn "$kfile 缺失（子模块没同步），已补空占位"
     fi
 done
+
+# 老内核（3.18）+ 新宿主编译器（GCC 10+）的经典冲突：
+# GCC 10 起默认 -fno-common，而 dtc 里 yylloc 在 lexer/parser 各定义了一次，
+# 旧的 -fcommon 会把它们合并，新的直接链接报 multiple definition。
+# 两步一起做：给宿主工具加回 -fcommon，并把 lexer 里的那份改成 extern。
+if grep -q '^HOSTCFLAGS   = -Wall' Makefile; then
+    sed -i 's/^HOSTCFLAGS   = -Wall/HOSTCFLAGS   = -fcommon -Wall/' Makefile
+    echo "已给宿主工具加 -fcommon（兼容 GCC 10+）"
+fi
+for f in scripts/dtc/dtc-lexer.lex.c scripts/dtc/dtc-lexer.l; do
+    if [ -f "$f" ] && grep -qE '^[[:space:]]*(YYLTYPE|int)[[:space:]]+yylloc;' "$f"; then
+        sed -i -E 's/^([[:space:]]*)(YYLTYPE|int)([[:space:]]+)yylloc;[[:space:]]*$/\1extern \2\3yylloc;/' "$f"
+        echo "已把 $f 里的 yylloc 改成 extern"
+    fi
+done
 if [ -f Makefile ]; then
     echo "版本: $(grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) =' Makefile | awk '{print $3}' | paste -sd.)"
 fi
