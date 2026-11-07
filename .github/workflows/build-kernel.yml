@@ -1,1 +1,116 @@
+name: build-s3pro-kernel
+
+# 用法：把本仓库推到 GitHub，把原厂 boot.img 放到 inputs/boot.img，
+# 然后 Actions 页面点 "Run workflow"。编完在 Artifacts 里下 boot.img。
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: '内核源码 git 地址'
+        default: 'https://github.com/Haoduo9/android_kernel_bbk_h3000s.git'
+        required: true
+      kernel_branch:
+        description: '分支（H3000S 移植树是 lineage-15.1-h3000s）'
+        default: 'lineage-15.1-h3000s'
+        required: true
+      defconfig:
+        description: 'defconfig 名（H3000S 用 h3000s_defconfig，放在 inputs/defconfig 亦可）'
+        default: 'h3000s_defconfig'
+        required: true
+      kernel_target:
+        description: 'make 目标（Image / Image.gz-dtb）'
+        default: 'Image'
+        required: true
+      toolchain:
+        description: '工具链'
+        type: choice
+        options: [gcc49, host]
+        default: gcc49
+      dry_run:
+        description: '只验证工具链/源码/配置，不编译（第一次接新树建议先跑）'
+        type: boolean
+        default: false
+  push:
+    paths:
+      - 'inputs/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+jobs:
+  # 先跑一遍本地自测，保证 boot.img 处理逻辑没被改坏
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bootimg 往返测试
+        run: python3 tests/test_bootimg.py
+      - name: build.sh 结构检查（本机没有 bash，用启发式检查器兜底）
+        run: python3 tests/test_sh_syntax.py
+      - name: 工作流自身结构检查
+        run: python3 tests/test_workflow.py
+      - name: TWRP 模块打包检查
+        run: python3 tests/test_twrp_zip.py
+
+  build:
+    needs: selftest
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 显示输入
+        run: |
+          echo "repo      = ${{ inputs.kernel_repo || 'Haoduo9/android_kernel_bbk_h3000s' }}"
+          echo "branch    = ${{ inputs.kernel_branch || 'lineage-15.1-h3000s' }}"
+          echo "defconfig = ${{ inputs.defconfig || 'h3000s_defconfig' }}"
+          echo "target    = ${{ inputs.kernel_target || 'Image' }}"
+          echo "toolchain = ${{ inputs.toolchain || 'gcc49' }}"
+          ls -la inputs/ 2>/dev/null || echo "（inputs/ 为空）"
+
+      - name: 体检 inputs/（Treble / 内核版本 / 分区）
+        if: always()
+        run: |
+          {
+            echo '### inputs/ 体检报告'
+            echo '```'
+            python3 scripts/analyze_dump.py inputs 2>&1 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 编译内核并打包 boot.img
+        env:
+          KERNEL_REPO: ${{ inputs.kernel_repo || 'https://github.com/Haoduo9/android_kernel_bbk_h3000s.git' }}
+          KERNEL_BRANCH: ${{ inputs.kernel_branch || 'lineage-15.1-h3000s' }}
+          DEFCONFIG: ${{ inputs.defconfig || 'h3000s_defconfig' }}
+          KERNEL_TARGET: ${{ inputs.kernel_target || 'Image' }}
+          TOOLCHAIN: ${{ inputs.toolchain || 'gcc49' }}
+          DRY_RUN: ${{ (inputs.dry_run && '1') || '0' }}
+        run: bash scripts/build.sh
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3pro-kernel-${{ github.run_number }}
+          path: |
+            out/boot.img
+            out/Image*
+            out/*.sha256
+            out/build-info.txt
+            out/build.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: 摘要
+        if: always()
+        run: |
+          {
+            echo '### 构建结果'
+            echo '```'
+            cat out/build-info.txt 2>/dev/null || echo '未生成 build-info.txt'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
