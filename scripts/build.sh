@@ -14,6 +14,9 @@
 #   JOBS            并行度
 set -euo pipefail
 
+# 脚本版本号：日志第 1 步会打印，用来确认跑的是不是最新版
+BUILD_SH_VERSION="v8-hostflags-on-cmdline"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${WORK:-$ROOT/work}"
 OUT="${OUT:-$ROOT/out}"
@@ -30,6 +33,14 @@ INPUT_DTB="${INPUT_DTB:-$ROOT/inputs/boot.dtb}"
 TOOLCHAIN="${TOOLCHAIN:-gcc49}"
 JOBS="${JOBS:-$(nproc)}"
 
+# 宿主工具（conf/dtc/modpost/fixdep）必须带这些 flag：
+#   -fcommon   GCC 10+ 取消默认值，老代码的重复定义会炸
+#   -fno-PIE -no-pie  Ubuntu 新版默认 PIE，老内核宿主工具不是 PIC
+# 关键：必须以**命令行变量**的形式传给 make，才能自动传到 scripts/kconfig
+#       这种子 make 里去；写进 Makefile 或 export 都不保证生效。
+HOSTCFLAGS_FIX="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -fcommon -fno-PIE -no-pie"
+export HOSTCFLAGS_FIX
+
 mkdir -p "$WORK" "$OUT"
 
 step() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
@@ -37,7 +48,7 @@ warn() { printf '\033[1;33m[warn] %s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[1;31m[error] %s\033[0m\n' "$*" >&2; exit 1; }
 
 # --------------------------------------------------------------------------- #
-step "1/6 主机依赖"
+step "1/6 主机依赖（脚本版本 $BUILD_SH_VERSION）"
 sudo apt-get update -qq
 sudo apt-get install -y -qq --no-install-recommends \
     build-essential bc bison flex libssl-dev libelf-dev file curl \
@@ -256,7 +267,7 @@ if [ ! -f .config ]; then
         ls arch/arm64/configs/ 2>/dev/null | grep '_defconfig$' | sed 's/^/  /' | head -30
         die "请把 DEFCONFIG 改成上面某个名字，或把外部 defconfig 放到 inputs/defconfig"
     fi
-    make ARCH=arm64 "$DEFCONFIG"
+    make ARCH=arm64 HOSTCFLAGS="$HOSTCFLAGS_FIX" "$DEFCONFIG"
 fi
 
 # 老内核 + 新环境常见的几处坑，按需兜底开启，保证能过编译
@@ -266,7 +277,7 @@ enable() {
 enable CONFIG_IKCONFIG
 enable CONFIG_IKCONFIG_PROC
 
-make ARCH=arm64 olddefconfig
+make ARCH=arm64 HOSTCFLAGS="$HOSTCFLAGS_FIX" olddefconfig
 
 # ★ 让新内核的 release 字符串和原厂一模一样。
 # 这不是洁癖：MTK 的 vendor 分区里有预编译内核模块（比如 wlan.ko），
@@ -288,7 +299,7 @@ if [ -n "$STOCK_VER" ]; then
 else
     warn "没读到原厂内核版本字符串，跳过 LOCALVERSION 对齐"
 fi
-make ARCH=arm64 olddefconfig
+make ARCH=arm64 HOSTCFLAGS="$HOSTCFLAGS_FIX" olddefconfig
 grep -E '^CONFIG_LOCALVERSION' .config || true
 
 # 把和上次链接失败相关的开关打出来，方便下一轮定位到底缺哪个提供者
@@ -342,7 +353,8 @@ fi
 step "5/6 编译（-j$JOBS，目标 $KERNEL_TARGET）"
 BUILD_LOG="$OUT/build.log"
 set +e
-make ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" -j"$JOBS" "$KERNEL_TARGET" 2>&1 | tee "$BUILD_LOG"
+make ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" HOSTCFLAGS="$HOSTCFLAGS_FIX" \
+        -j"$JOBS" "$KERNEL_TARGET" 2>&1 | tee "$BUILD_LOG"
 RC=${PIPESTATUS[0]}
 set -e
 if [ "$RC" -ne 0 ]; then
