@@ -177,14 +177,23 @@ done
 # GCC 10 起默认 -fno-common，而 dtc 里 yylloc 在 lexer/parser 各定义了一次，
 # 旧的 -fcommon 会把它们合并，新的直接链接报 multiple definition。
 # 两步一起做：给宿主工具加回 -fcommon，并把 lexer 里的那份改成 extern。
-if grep -q '^HOSTCFLAGS   = ' Makefile; then
-    # -fcommon ：GCC 10+ 取消了 -fcommon 默认值，老 dtc 会 yylloc 重复定义
-    # -fno-PIE / -no-pie ：Ubuntu 新版默认为可执行文件开 PIE，
-    #                      而老内核的宿主工具（fixdep/modpost）不是 PIC 的，
-    #                      链接会报 "relocation R_X86_64_32 ... can not be used when making a PIE object"
-    sed -i 's/^HOSTCFLAGS   = /HOSTCFLAGS   = -fcommon -fno-PIE -no-pie /' Makefile
-    echo "已给宿主工具加兼容开关：$(grep '^HOSTCFLAGS   = ' Makefile | head -1)"
-fi
+# 老内核（3.18）+ 新宿主 GCC 的两个必踩坑：
+#   ① GCC 10+ 取消 -fcommon 默认值  → dtc 的 yylloc 重复定义
+#   ② Ubuntu 新版默认 PIE           → 宿主工具(conf/fixdep)链接报
+#      "relocation R_X86_64_32 ... can not be used when making a PIE object"
+#
+# 关键点：这些宿主工具是在**子 make** 里编的（scripts/Makefile.host），
+# 顶层 Makefile 改了 HOSTCFLAGS 但如果没 export，子 make 根本收不到。
+# 所以这里不只改值，还显式 export 一次。
+{
+    echo ""
+    echo "# ===== build.sh 追加：兼容新宿主编译器 ====="
+    echo "HOSTCFLAGS += -fcommon -fno-PIE -no-pie"
+    echo "HOSTCXXFLAGS += -fcommon -fno-PIE -no-pie"
+    echo "export HOSTCFLAGS HOSTCXXFLAGS"
+} >> Makefile
+echo "已追加宿主工具兼容开关，当前定义："
+grep -nE '^HOST(CFLAGS|CXXFLAGS)|^export HOST(CFLAGS|CXXFLAGS)' Makefile | tail -6 | sed 's/^/  /'
 for f in scripts/dtc/dtc-lexer.lex.c scripts/dtc/dtc-lexer.l; do
     if [ -f "$f" ] && grep -qE '^[[:space:]]*(YYLTYPE|int)[[:space:]]+yylloc;' "$f"; then
         sed -i -E 's/^([[:space:]]*)(YYLTYPE|int)([[:space:]]+)yylloc;[[:space:]]*$/\1extern \2\3yylloc;/' "$f"
