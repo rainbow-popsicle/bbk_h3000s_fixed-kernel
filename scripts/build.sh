@@ -15,7 +15,7 @@
 set -euo pipefail
 
 # 脚本版本号：日志第 1 步会打印，用来确认跑的是不是最新版
-BUILD_SH_VERSION="v8-hostflags-on-cmdline"
+BUILD_SH_VERSION="v9-triple-layer-pie-fix"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${WORK:-$ROOT/work}"
@@ -205,6 +205,20 @@ done
 } >> Makefile
 echo "已追加宿主工具兼容开关，当前定义："
 grep -nE '^HOST(CFLAGS|CXXFLAGS)|^export HOST(CFLAGS|CXXFLAGS)' Makefile | tail -6 | sed 's/^/  /'
+
+# 第三层保险：直接改内核树里脚本 Makefile 的原文。
+# 前面试过"改顶层变量"和"命令行传变量"，都依赖 make 的变量传递规则；
+# 这里直接改链接命令本身，只要文件被 sed 到就一定生效。
+if [ -f scripts/Makefile.host ]; then
+    # 编译：给宿主 C 文件加 -fno-PIE -fcommon
+    sed -i 's|^_hostc_flags   = \$(HOSTCFLAGS)|_hostc_flags   = -fno-PIE -fcommon $(HOSTCFLAGS)|' \
+        scripts/Makefile.host 2>/dev/null || true
+    # 链接：在 $(HOSTCC) 后面硬插 -no-pie
+    sed -i -E 's|^(cmd_ld[[:space:]]*=[[:space:]]*\$\(HOSTCC\))|\1 -no-pie|' \
+        scripts/Makefile.host 2>/dev/null || true
+    echo "scripts/Makefile.host 关键行："
+    grep -nE '_hostc_flags|^cmd_ld' scripts/Makefile.host | head -5 | sed 's/^/  /'
+fi
 for f in scripts/dtc/dtc-lexer.lex.c scripts/dtc/dtc-lexer.l; do
     if [ -f "$f" ] && grep -qE '^[[:space:]]*(YYLTYPE|int)[[:space:]]+yylloc;' "$f"; then
         sed -i -E 's/^([[:space:]]*)(YYLTYPE|int)([[:space:]]+)yylloc;[[:space:]]*$/\1extern \2\3yylloc;/' "$f"
@@ -267,6 +281,7 @@ if [ ! -f .config ]; then
         ls arch/arm64/configs/ 2>/dev/null | grep '_defconfig$' | sed 's/^/  /' | head -30
         die "请把 DEFCONFIG 改成上面某个名字，或把外部 defconfig 放到 inputs/defconfig"
     fi
+    echo "将执行: make ARCH=arm64 HOSTCFLAGS=\"$HOSTCFLAGS_FIX\" $DEFCONFIG"
     make ARCH=arm64 HOSTCFLAGS="$HOSTCFLAGS_FIX" "$DEFCONFIG"
 fi
 
