@@ -15,7 +15,7 @@
 set -euo pipefail
 
 # 脚本版本号：日志第 1 步会打印，用来确认跑的是不是最新版
-BUILD_SH_VERSION="v10-hostcc-wrapper"
+BUILD_SH_VERSION="v13-auto-appended-dtb"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${WORK:-$ROOT/work}"
@@ -24,6 +24,11 @@ PY="${PY:-python3}"
 
 KERNEL_REPO="${KERNEL_REPO:-https://github.com/Haoduo9/android_kernel_bbk_h3000s.git}"
 KERNEL_BRANCH="${KERNEL_BRANCH:-lineage-15.1-h3000s}"
+# 编哪个提交。留空 = 用分支最新提交（默认）。
+# 注意：H3000S 支持只有 442b953 这一个提交，它的父提交是 2018 年 8 月的
+# 原始 cappu 代码，没有 S3 Pro 支持，所以别往 HEAD~1 走。
+# 需要指定某个提交时在这里填哈希，例如 KERNEL_REF="442b953"。
+KERNEL_REF="${KERNEL_REF:-}"
 DEFCONFIG="${DEFCONFIG:-h3000s_defconfig}"
 KERNEL_TARGET="${KERNEL_TARGET:-Image}"
 STOCK_BOOT="${STOCK_BOOT:-$ROOT/inputs/boot.img}"
@@ -176,11 +181,38 @@ fi
 step "3/6 拉取内核源码"
 SRC="$WORK/kernel"
 if [ ! -d "$SRC/.git" ]; then
-    git clone --depth 1 -b "$KERNEL_BRANCH" "$KERNEL_REPO" "$SRC" \
-        || git clone --depth 1 "$KERNEL_REPO" "$SRC"
+    # depth 50：要能拿到 HEAD~1，depth 1 不够
+    git clone --depth 50 -b "$KERNEL_BRANCH" "$KERNEL_REPO" "$SRC" \
+        || git clone --depth 50 "$KERNEL_REPO" "$SRC"
 fi
 cd "$SRC"
-echo "HEAD: $(git log -1 --format='%h %s' 2>/dev/null || echo '(无 git 信息)')"
+if [ -n "$KERNEL_REF" ]; then
+    if git rev-parse --verify -q "$KERNEL_REF" >/dev/null 2>&1; then
+        git checkout -q "$KERNEL_REF" || warn "切到 $KERNEL_REF 失败"
+        echo "已切到 $KERNEL_REF"
+    else
+        warn "找不到 $KERNEL_REF（仓库历史太短？），继续用分支最新提交"
+    fi
+fi
+echo "当前提交: $(git log -1 --format='%h %s' 2>/dev/null || echo '(无 git 信息)')"
+echo "提交时间: $(git log -1 --format='%ci' 2>/dev/null || echo '-')"
+
+# 如果树里自带 h3000s 的 DTS，就让 kbuild 自己把 DTB 打进 Image.gz-dtb。
+# 理由：源码里的屏驱动已经换了一套 GPIO 定义（GPIO_LCD_1V8_EN / RST_EN_NEW），
+# 而我们外挂的是从成品内核里拆出来的老 DTB（只有 gpio_lcd_enp/enn）——
+# 对不上，内核会直接起不来。
+AUTO_DTB=0
+if [ "${KERNEL_TARGET_KEEP:-0}" != "1" ] && [ "$KERNEL_TARGET" = "Image" ]; then
+    if ls arch/arm64/boot/dts/*h3000s* >/dev/null 2>&1; then
+        KERNEL_TARGET="Image.gz-dtb"
+        AUTO_DTB=1
+        echo "发现自带 DTS: $(ls arch/arm64/boot/dts/*h3000s* | tr '\n' ' ')"
+        echo "改用 Image.gz-dtb，让内核自己打包 DTB（不再外挂老 DTB）"
+    else
+        echo "树里没有 h3000s 的 DTS，继续用外挂 DTB"
+    fi
+fi
+echo "编译目标: $KERNEL_TARGET"
 
 # 这棵 H3000S 树把 WireGuard 之类做成了子模块，--depth 1 克隆不会带下来。
 # 不处理的话 kconfig 阶段会报 can't open file "net/wireguard/Kconfig" 直接退出。
@@ -335,6 +367,18 @@ grep -E '^CONFIG_LOCALVERSION' .config || true
 echo "--- 电池 / SDIO / vcore 相关开关 ---"
 grep -E '^CONFIG_MTK_(BATTERY|SDIO|VCORE|CHARGER|SMART)' .config || echo "  （一个都没有）"
 
+# olddefconfig 会悄悄丢掉依赖不满足的选项。把 defconfig 里写了、
+# 但最终 .config 里没有的键列出来——这些往往就是"驱动没编进去"的真凶。
+if [ -f "arch/arm64/configs/$DEFCONFIG" ]; then
+    echo "--- defconfig 里有、最终配置里没有的键（可能被 olddefconfig 丢了）---"
+    grep -E '^CONFIG_[A-Z0-9_]+=' "arch/arm64/configs/$DEFCONFIG" \
+        | sed 's/=.*//' | sort -u > "$WORK/cfg_want.txt"
+    grep -E '^CONFIG_[A-Z0-9_]+=' .config \
+        | sed 's/=.*//' | sort -u > "$WORK/cfg_has.txt"
+    comm -23 "$WORK/cfg_want.txt" "$WORK/cfg_has.txt" | head -40 | sed 's/^/  /' || true
+    echo "  （以上若为空，说明配置完全按 defconfig 生效）"
+fi
+
 # 社区树的 h3000s_defconfig 不完整：链接时 bm_ctrl_cmd / sdio_* 没有实现者。
 # 先注入 weak 占位让内核能链接出来（weak 会被真实实现覆盖），
 # 目的是先拿到一个能开机的东西，再回头把配置补对。
@@ -417,7 +461,9 @@ if [ -f "$STOCK_BOOT" ]; then
     # 否则新内核里没有这块板子的硬件描述（屏、触摸、PMIC 全在里面）。
     SPLICE_EXTRA=()
     DTB_PATH=""
-    if [ -f "$INPUT_DTB" ]; then
+    if [ "$AUTO_DTB" = "1" ]; then
+        echo "内核已自带 DTB（Image.gz-dtb），不再外挂"
+    elif [ -f "$INPUT_DTB" ]; then
         DTB_PATH="$INPUT_DTB"
         SPLICE_EXTRA=(--dtb "$DTB_PATH")
         echo "使用 inputs/boot.dtb（$(stat -c%s "$DTB_PATH") 字节，社区修正版）"
@@ -443,7 +489,9 @@ if [ -f "$STOCK_BOOT" ]; then
         esac
     fi
 
-    if [ "$KIND" = "gzip" ] && [ "${IMG##*.}" != "gz" ]; then
+    if [ "$AUTO_DTB" = "1" ]; then
+        echo "跳过压缩：$IMG 已经是 Image.gz-dtb"
+    elif [ "$KIND" = "gzip" ] && [ "${IMG##*.}" != "gz" ]; then
         echo "原厂是压缩内核，把新 Image 压成 Image.gz"
         gzip -9 -n -c "$IMG" > "$OUT/Image.gz"
         IMG="$OUT/Image.gz"
