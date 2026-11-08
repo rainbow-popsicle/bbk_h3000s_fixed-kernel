@@ -17,7 +17,7 @@
 set -euo pipefail
 
 # 脚本版本号：日志第 1 步会打印，用来确认跑的是不是最新版
-BUILD_SH_VERSION="v24-binder-source-patch"
+BUILD_SH_VERSION="v25-binder-miscdev"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${WORK:-$ROOT/work}"
@@ -344,31 +344,18 @@ enable CONFIG_IKCONFIG_PROC
 make ARCH=arm64 HOSTCC="$HOSTCC_FIX" HOSTCFLAGS="$HOSTCFLAGS_FIX" olddefconfig
 
 # ★ Android 8 的 HAL 全靠 /dev/hwbinder 和 /dev/vndbinder 通信。
-#   这棵树有个坑：defconfig 里写了 CONFIG_ANDROID_BINDER_DEVICES，
-#   但 Kconfig 里根本没定义这个符号（实测：追加到 .config 再跑 olddefconfig
-#   照样被丢掉），所以最终内核只注册 binder，hwservicemanager 打不开
-#   /dev/hwbinder 直接 abort，所有 HAL 起不来，SurfaceFlinger 拿不到显示 HAL。
+#   这棵树是 MTK 魔改版 binder：drivers/staging/android/binder.c 里只注册了一个
+#   miscdevice("binder")，压根没有 hwbinder / vndbinder，Kconfig 里也没有
+#   ANDROID_BINDER_DEVICES 这个符号（实测追加配置会被 olddefconfig 丢掉）。
+#   结果：hwservicemanager 打不开 /dev/hwbinder 直接 abort → 所有 HAL 起不来
+#         → SurfaceFlinger 拿不到显示 HAL → 屏幕永远黑着。
 #
-#   配置层面无解，那就直接改源码：binder 驱动初始化里引用这个宏的地方，
-#   换成字面量 "binder,hwbinder,vndbinder"。
-BINDER_DEV="binder,hwbinder,vndbinder"
-echo "--- 诊断：树里哪里用到 ANDROID_BINDER_DEVICES ---"
-grep -rn "ANDROID_BINDER_DEVICES" drivers/ 2>/dev/null | head -20 || echo "  （drivers/ 下没有）"
-echo "--- binder 驱动文件 ---"
-ls drivers/staging/android/ 2>/dev/null | head -20 || echo "  （没有 drivers/staging/android）"
-
-BINDER_PATCHED=0
-for bf in drivers/staging/android/binder.c drivers/android/binder.c; do
-    if [ -f "$bf" ] && grep -q 'CONFIG_ANDROID_BINDER_DEVICES' "$bf"; then
-        sed -i "s/CONFIG_ANDROID_BINDER_DEVICES/\"$BINDER_DEV\"/g" "$bf"
-        echo "已把 $bf 里的 CONFIG_ANDROID_BINDER_DEVICES 换成字面量"
-        BINDER_PATCHED=1
-        # 打印改后的那几行，确认改对了
-        grep -n "binder,hwbinder,vndbinder" "$bf" | head -5 | sed 's/^/  /'
-    fi
-done
-if [ "$BINDER_PATCHED" = "0" ]; then
-    warn "没找到引用 CONFIG_ANDROID_BINDER_DEVICES 的 binder 源码，/dev/hwbinder 可能还是没有"
+#   所以用脚本给源码补上两个 miscdevice（只有新增，不改原有逻辑）。
+if [ -f "$ROOT/scripts/patch_binder.py" ]; then
+    echo "--- 给 binder 驱动补 hwbinder / vndbinder ---"
+    "$PY" "$ROOT/scripts/patch_binder.py" . || warn "binder 补丁失败"
+else
+    warn "scripts/patch_binder.py 不存在，/dev/hwbinder 仍然不会有"
 fi
 
 # ★ 让新内核的 release 字符串和原厂一模一样。
