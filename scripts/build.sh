@@ -6,7 +6,7 @@
 #   KERNEL_BRANCH   分支
 #   DEFCONFIG       树里的 defconfig 名（没有内嵌 config 时的兜底）
 #   KERNEL_TARGET   默认 Image；MTK 树自带 DTB 时可用 Image.gz-dtb
-#   LCMPATCH=0      不把 LCM 驱动里的 GPIO_LCD_* 属性名改成 DTS 里的旧名字
+#   LCMPATCH=0      不改 LCM 驱动（默认会把节点名/GPIO 属性名改成 DTS 里真实存在的）
 #   ADB_NOAUTH=0    不关闭 adb 授权要求（默认会改 ramdisk 的 ro.adb.secure=0）
 #   STOCK_BOOT      原厂 boot.img 路径（有则从中提取真实 .config，并作为打回模板）
 #   INPUT_DEFCONFIG 外部 defconfig 文件（社区补丁仓库的 h3000s_defconfig）
@@ -17,7 +17,7 @@
 set -euo pipefail
 
 # 脚本版本号：日志第 1 步会打印，用来确认跑的是不是最新版
-BUILD_SH_VERSION="v21-config-order"
+BUILD_SH_VERSION="v23-binder-devices"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${WORK:-$ROOT/work}"
@@ -343,6 +343,22 @@ enable CONFIG_IKCONFIG_PROC
 
 make ARCH=arm64 HOSTCC="$HOSTCC_FIX" HOSTCFLAGS="$HOSTCFLAGS_FIX" olddefconfig
 
+# ★ Android 8 的 HAL 全靠 /dev/hwbinder 和 /dev/vndbinder 通信。
+#   这棵树的 defconfig 里明明写了 CONFIG_ANDROID_BINDER_DEVICES，
+#   但 olddefconfig 会把它丢掉（实测：最终 .config 里一行都没有），
+#   结果内核只注册 binder，hwservicemanager 打不开 /dev/hwbinder 直接 abort，
+#   所有 HAL 起不来，SurfaceFlinger 也就拿不到显示 HAL —— 屏幕永远黑着。
+BINDER_DEV="binder,hwbinder,vndbinder"
+if ! grep -q '^CONFIG_ANDROID_BINDER_DEVICES=' .config; then
+    echo "CONFIG_ANDROID_BINDER_DEVICES=\"$BINDER_DEV\"" >> .config
+    make ARCH=arm64 HOSTCC="$HOSTCC_FIX" HOSTCFLAGS="$HOSTCFLAGS_FIX" olddefconfig >/dev/null 2>&1 || true
+fi
+if grep -q '^CONFIG_ANDROID_BINDER_DEVICES=' .config; then
+    echo "binder 设备: $(grep '^CONFIG_ANDROID_BINDER_DEVICES=' .config)"
+else
+    warn "CONFIG_ANDROID_BINDER_DEVICES 仍然没写进 .config —— /dev/hwbinder 可能不会出现"
+fi
+
 # ★ 让新内核的 release 字符串和原厂一模一样。
 # 这不是洁癖：MTK 的 vendor 分区里有预编译内核模块（比如 wlan.ko），
 # 加载时会比对 vermagic/`uname -r`，release 对不上就直接模块加载失败（WiFi 死、相机死）。
@@ -383,7 +399,7 @@ make ARCH=arm64 HOSTCC="$HOSTCC_FIX" HOSTCFLAGS="$HOSTCFLAGS_FIX" olddefconfig
 #   映射关系：vsp→enp  vsn→enn  rst_en/rst_en_new→rst  1v8→enp（硬件无独立 1.8V 脚）
 #   不想要这个行为就设 LCMPATCH=0。
 if [ "${LCMPATCH:-1}" = "1" ]; then
-    LCM_NAME=$(sed -n 's/^CONFIG_CUSTOM_KERNEL_LCM="\(.*\)"$/\1/p' .config | head -1)
+    LCM_NAME=$(sed -n 's/^CONFIG_CUSTOM_KERNEL_LCM="\(.*\)"$/\1/p' .config 2>/dev/null | head -1 || true)
     LCM_DIR="drivers/misc/mediatek/lcm/$LCM_NAME"
     echo "当前选中的屏驱动: $LCM_NAME"
     if [ -z "$LCM_NAME" ] || [ ! -d "$LCM_DIR" ]; then
@@ -408,7 +424,7 @@ if [ "${LCMPATCH:-1}" = "1" ]; then
                 echo "  已去掉 goto out 和 out: 标签"
                 sed -n '/void lcm_get_gpio_infor/,/^}/p' "$f" > /tmp/lcm_after.txt
                 echo "  --- 改后的函数（只看关键行）---"
-                grep -nE 'of_find_compatible_node|of_get_named_gpio|goto out|out:' /tmp/lcm_after.txt | sed 's/^/    /'
+                grep -nE 'of_find_compatible_node|of_get_named_gpio|goto out|out:' /tmp/lcm_after.txt 2>/dev/null | sed 's/^/    /' || true
             fi
         done
     else
@@ -567,6 +583,13 @@ if [ -f "$STOCK_BOOT" ]; then
         fi
     fi
 
+
+    # 自检：内核里必须带 binder,hwbinder,vndbinder，否则 /dev/hwbinder 不会创建，
+    # Android 8 的 HAL 全部起不来（作者的内核里就有这个字符串）。
+    if ! grep -qa 'binder,hwbinder,vndbinder' "$IMG"; then
+        die "内核里没有 binder,hwbinder,vndbinder —— /dev/hwbinder 不会出现，HAL 起不来"
+    fi
+    echo "自检通过：内核包含 binder,hwbinder,vndbinder"
     sha256sum "$OUT/boot.img" | tee "$OUT/boot.sha256"
 else
     warn "没有 inputs/boot.img，只输出裸内核，不生成可刷的 boot.img"
