@@ -17,7 +17,7 @@
 set -euo pipefail
 
 # 脚本版本号：日志第 1 步会打印，用来确认跑的是不是最新版
-BUILD_SH_VERSION="v20-lcm-scoped"
+BUILD_SH_VERSION="v21-config-order"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${WORK:-$ROOT/work}"
@@ -215,55 +215,6 @@ if [ "${KERNEL_TARGET_KEEP:-0}" != "1" ] && [ "$KERNEL_TARGET" = "Image" ]; then
     fi
 fi
 
-# ★ 屏点不亮的真正原因（三个问题叠加，缺一不可）：
-#
-#   1) 驱动去 of_find_compatible_node(NULL,NULL,"mediatek,mt8173-lcm") 找节点，
-#      但设备树里根本没有这个 compatible（原厂 7.0 / FIXED5 / 作者成品三份 DTB
-#      全都没有）→ node = NULL → 后面所有 of_get_named_gpio 返回 -2 → 屏永不点亮。
-#      设备树里真正带 GPIO 属性的节点是 "mediatek,nt35523_fhd"。
-#
-#   2) 属性名对不上：驱动查 gpio_lcm_vsp_en/vsn/rst_en/rst_en_new/1v8_en，
-#      设备树里只有 gpio_lcd_enp / gpio_lcd_enn / gpio_lcd_rst / gpio_lcd_id。
-#
-#   3) 硬件只有 4 个 GPIO（id/enp/enn/rst），驱动要 5 个 → 必然有两个指到同一引脚
-#      → 第二次 gpio_request 返回 -EBUSY → 代码里 `goto out;` 直接放弃整个初始化。
-#      去掉 goto 之后 out: 标签没人引用，-Werror 会报 unused-label，所以标签一起删。
-#
-#   映射关系：vsp→enp  vsn→enn  rst_en/rst_en_new→rst  1v8→enp（硬件无独立 1.8V 脚）
-#   不想要这个行为就设 LCMPATCH=0。
-if [ "${LCMPATCH:-1}" = "1" ]; then
-    LCM_NAME=$(sed -n 's/^CONFIG_CUSTOM_KERNEL_LCM="\(.*\)"$/\1/p' .config | head -1)
-    LCM_DIR="drivers/misc/mediatek/lcm/$LCM_NAME"
-    echo "当前选中的屏驱动: $LCM_NAME"
-    if [ -z "$LCM_NAME" ] || [ ! -d "$LCM_DIR" ]; then
-        warn "找不到 $LCM_DIR，退回全目录搜索"
-        LCM_DIR="drivers/misc/mediatek/lcm"
-    fi
-
-    LCM_FILES=$(grep -rlE 'gpio_lcm_|mediatek,mt8173-lcm' "$LCM_DIR" 2>/dev/null || true)
-    if [ -n "$LCM_FILES" ]; then
-        for f in $LCM_FILES; do
-            sed -i 's/"mediatek,mt8173-lcm"/"mediatek,nt35523_fhd"/g' "$f"
-            sed -i 's/gpio_lcm_rst_en_new/gpio_lcd_rst/g' "$f"
-            sed -i 's/gpio_lcm_rst_en/gpio_lcd_rst/g' "$f"
-            sed -i 's/gpio_lcm_vsp_en/gpio_lcd_enp/g' "$f"
-            sed -i 's/gpio_lcm_vsn_en/gpio_lcd_enn/g' "$f"
-            sed -i 's/gpio_lcm_1v8_en/gpio_lcd_enp/g' "$f"
-            echo "已改: $f"
-
-            if grep -q 'lcm_get_gpio_infor' "$f"; then
-                sed -i 's/goto out;/;/' "$f"
-                sed -i 's/^[[:space:]]*out:[[:space:]]*$//' "$f"
-                echo "  已去掉 goto out 和 out: 标签"
-                sed -n '/void lcm_get_gpio_infor/,/^}/p' "$f" > /tmp/lcm_after.txt
-                echo "  --- 改后的函数（只看关键行）---"
-                grep -nE 'of_find_compatible_node|of_get_named_gpio|goto out|out:' /tmp/lcm_after.txt | sed 's/^/    /'
-            fi
-        done
-    else
-        warn "在 $LCM_DIR 里没找到需要改的字符串，跳过"
-    fi
-fi
 echo "编译目标: $KERNEL_TARGET"
 
 # 这棵 H3000S 树把 WireGuard 之类做成了子模块，--depth 1 克隆不会带下来。
@@ -413,6 +364,57 @@ else
     warn "没读到原厂内核版本字符串，跳过 LOCALVERSION 对齐"
 fi
 make ARCH=arm64 HOSTCC="$HOSTCC_FIX" HOSTCFLAGS="$HOSTCFLAGS_FIX" olddefconfig
+
+# ---- 屏驱动补丁：必须在 .config 生成之后、make 之前 ----
+# ★ 屏点不亮的真正原因（三个问题叠加，缺一不可）：
+#
+#   1) 驱动去 of_find_compatible_node(NULL,NULL,"mediatek,mt8173-lcm") 找节点，
+#      但设备树里根本没有这个 compatible（原厂 7.0 / FIXED5 / 作者成品三份 DTB
+#      全都没有）→ node = NULL → 后面所有 of_get_named_gpio 返回 -2 → 屏永不点亮。
+#      设备树里真正带 GPIO 属性的节点是 "mediatek,nt35523_fhd"。
+#
+#   2) 属性名对不上：驱动查 gpio_lcm_vsp_en/vsn/rst_en/rst_en_new/1v8_en，
+#      设备树里只有 gpio_lcd_enp / gpio_lcd_enn / gpio_lcd_rst / gpio_lcd_id。
+#
+#   3) 硬件只有 4 个 GPIO（id/enp/enn/rst），驱动要 5 个 → 必然有两个指到同一引脚
+#      → 第二次 gpio_request 返回 -EBUSY → 代码里 `goto out;` 直接放弃整个初始化。
+#      去掉 goto 之后 out: 标签没人引用，-Werror 会报 unused-label，所以标签一起删。
+#
+#   映射关系：vsp→enp  vsn→enn  rst_en/rst_en_new→rst  1v8→enp（硬件无独立 1.8V 脚）
+#   不想要这个行为就设 LCMPATCH=0。
+if [ "${LCMPATCH:-1}" = "1" ]; then
+    LCM_NAME=$(sed -n 's/^CONFIG_CUSTOM_KERNEL_LCM="\(.*\)"$/\1/p' .config | head -1)
+    LCM_DIR="drivers/misc/mediatek/lcm/$LCM_NAME"
+    echo "当前选中的屏驱动: $LCM_NAME"
+    if [ -z "$LCM_NAME" ] || [ ! -d "$LCM_DIR" ]; then
+        warn "找不到 $LCM_DIR，退回全目录搜索"
+        LCM_DIR="drivers/misc/mediatek/lcm"
+    fi
+
+    LCM_FILES=$(grep -rlE 'gpio_lcm_|mediatek,mt8173-lcm' "$LCM_DIR" 2>/dev/null || true)
+    if [ -n "$LCM_FILES" ]; then
+        for f in $LCM_FILES; do
+            sed -i 's/"mediatek,mt8173-lcm"/"mediatek,nt35523_fhd"/g' "$f"
+            sed -i 's/gpio_lcm_rst_en_new/gpio_lcd_rst/g' "$f"
+            sed -i 's/gpio_lcm_rst_en/gpio_lcd_rst/g' "$f"
+            sed -i 's/gpio_lcm_vsp_en/gpio_lcd_enp/g' "$f"
+            sed -i 's/gpio_lcm_vsn_en/gpio_lcd_enn/g' "$f"
+            sed -i 's/gpio_lcm_1v8_en/gpio_lcd_enp/g' "$f"
+            echo "已改: $f"
+
+            if grep -q 'lcm_get_gpio_infor' "$f"; then
+                sed -i 's/goto out;/;/' "$f"
+                sed -i 's/^[[:space:]]*out:[[:space:]]*$//' "$f"
+                echo "  已去掉 goto out 和 out: 标签"
+                sed -n '/void lcm_get_gpio_infor/,/^}/p' "$f" > /tmp/lcm_after.txt
+                echo "  --- 改后的函数（只看关键行）---"
+                grep -nE 'of_find_compatible_node|of_get_named_gpio|goto out|out:' /tmp/lcm_after.txt | sed 's/^/    /'
+            fi
+        done
+    else
+        warn "在 $LCM_DIR 里没找到需要改的字符串，跳过"
+    fi
+fi
 grep -E '^CONFIG_LOCALVERSION' .config || true
 
 # 把和上次链接失败相关的开关打出来，方便下一轮定位到底缺哪个提供者
