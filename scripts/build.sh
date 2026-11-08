@@ -6,6 +6,8 @@
 #   KERNEL_BRANCH   分支
 #   DEFCONFIG       树里的 defconfig 名（没有内嵌 config 时的兜底）
 #   KERNEL_TARGET   默认 Image；MTK 树自带 DTB 时可用 Image.gz-dtb
+#   LCMPATCH=0      不把 LCM 驱动里的 GPIO_LCD_* 属性名改成 DTS 里的旧名字
+#   ADB_NOAUTH=0    不关闭 adb 授权要求（默认会改 ramdisk 的 ro.adb.secure=0）
 #   STOCK_BOOT      原厂 boot.img 路径（有则从中提取真实 .config，并作为打回模板）
 #   INPUT_DEFCONFIG 外部 defconfig 文件（社区补丁仓库的 h3000s_defconfig）
 #   INPUT_DTB       外部 DTB（社区修正版），优先于从 boot.img 里拆出的那份
@@ -15,7 +17,7 @@
 set -euo pipefail
 
 # 脚本版本号：日志第 1 步会打印，用来确认跑的是不是最新版
-BUILD_SH_VERSION="v13-auto-appended-dtb"
+BUILD_SH_VERSION="v15-adb-noauth"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${WORK:-$ROOT/work}"
@@ -210,6 +212,38 @@ if [ "${KERNEL_TARGET_KEEP:-0}" != "1" ] && [ "$KERNEL_TARGET" = "Image" ]; then
         echo "改用 Image.gz-dtb，让内核自己打包 DTB（不再外挂老 DTB）"
     else
         echo "树里没有 h3000s 的 DTS，继续用外挂 DTB"
+    fi
+fi
+echo "编译目标: $KERNEL_TARGET"
+
+# ★ 这棵树有个内部不一致（作者漏提交的部分）：
+#   自带 DTS 里屏节点的属性是旧名字：
+#       gpio_lcd_id / gpio_lcd_enp / gpio_lcd_enn / gpio_lcd_rst
+#   但 LCM 驱动代码里写的是新名字：
+#       GPIO_LCD_1V8_EN / GPIO_LCD_VSP_EN / GPIO_LCD_VSN_EN /
+#       GPIO_LCD_RST_EN / GPIO_LCD_RST_EN_NEW
+#   结果驱动 of_get_named_gpio 全部返回 -2(-ENOENT)，
+#   lcm_init → lcm_get_gpio_infor 直接 WARNING，屏永远点不亮。
+#
+#   这里把驱动里的新名字改回 DTS 里真实存在的旧名字：
+#       VSP(正压) → enp      VSN(负压) → enn
+#       RST_EN / RST_EN_NEW → rst
+#       （1V8 没有对应引脚，暂且也指到 enp 上，先让 probe 不炸）
+#   不想要这个行为就设 LCMPATCH=0。
+if [ "${LCMPATCH:-1}" = "1" ]; then
+    LCM_FILES="$(grep -rl 'GPIO_LCD_' drivers 2>/dev/null || true)"
+    if [ -n "$LCM_FILES" ]; then
+        for f in $LCM_FILES; do
+            sed -i \
+                -e 's/GPIO_LCD_RST_EN_NEW/gpio_lcd_rst/g' \
+                -e 's/GPIO_LCD_RST_EN/gpio_lcd_rst/g' \
+                -e 's/GPIO_LCD_VSP_EN/gpio_lcd_enp/g' \
+                -e 's/GPIO_LCD_VSN_EN/gpio_lcd_enn/g' \
+                -e 's/GPIO_LCD_1V8_EN/gpio_lcd_enp/g' "$f"
+            echo "已把 GPIO 属性名改成 DTS 里的旧名字: $f"
+        done
+    else
+        warn "没在 drivers/ 里找到 GPIO_LCD_* 字符串，跳过"
     fi
 fi
 echo "编译目标: $KERNEL_TARGET"
@@ -498,6 +532,16 @@ if [ -f "$STOCK_BOOT" ]; then
     fi
     "$PY" "$ROOT/scripts/bootimg.py" splice \
         --template "$STOCK_BOOT" --kernel "$IMG" "${SPLICE_EXTRA[@]}" --out "$OUT/boot.img"
+
+    # 屏不亮的时候根本没法点"允许 USB 调试"，adb 会一直 unauthorized，
+    # 日志抓不到。把 ramdisk 里的 ro.adb.secure 改成 0，adb 直接连。
+    # 不想关就设 ADB_NOAUTH=0。
+    if [ "${ADB_NOAUTH:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_ramdisk.py" ]; then
+        echo "--- 关闭 adb 授权要求（ro.adb.secure=0），方便抓开机日志 ---"
+        "$PY" "$ROOT/scripts/patch_ramdisk.py" "$OUT/boot.img" \
+            || warn "改 ramdisk 属性失败，adb 仍需要授权"
+    fi
+
     sha256sum "$OUT/boot.img" | tee "$OUT/boot.sha256"
 else
     warn "没有 inputs/boot.img，只输出裸内核，不生成可刷的 boot.img"
