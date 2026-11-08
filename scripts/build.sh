@@ -17,7 +17,7 @@
 set -euo pipefail
 
 # 脚本版本号：日志第 1 步会打印，用来确认跑的是不是最新版
-BUILD_SH_VERSION="v23-binder-devices"
+BUILD_SH_VERSION="v24-binder-source-patch"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${WORK:-$ROOT/work}"
@@ -344,19 +344,31 @@ enable CONFIG_IKCONFIG_PROC
 make ARCH=arm64 HOSTCC="$HOSTCC_FIX" HOSTCFLAGS="$HOSTCFLAGS_FIX" olddefconfig
 
 # ★ Android 8 的 HAL 全靠 /dev/hwbinder 和 /dev/vndbinder 通信。
-#   这棵树的 defconfig 里明明写了 CONFIG_ANDROID_BINDER_DEVICES，
-#   但 olddefconfig 会把它丢掉（实测：最终 .config 里一行都没有），
-#   结果内核只注册 binder，hwservicemanager 打不开 /dev/hwbinder 直接 abort，
-#   所有 HAL 起不来，SurfaceFlinger 也就拿不到显示 HAL —— 屏幕永远黑着。
+#   这棵树有个坑：defconfig 里写了 CONFIG_ANDROID_BINDER_DEVICES，
+#   但 Kconfig 里根本没定义这个符号（实测：追加到 .config 再跑 olddefconfig
+#   照样被丢掉），所以最终内核只注册 binder，hwservicemanager 打不开
+#   /dev/hwbinder 直接 abort，所有 HAL 起不来，SurfaceFlinger 拿不到显示 HAL。
+#
+#   配置层面无解，那就直接改源码：binder 驱动初始化里引用这个宏的地方，
+#   换成字面量 "binder,hwbinder,vndbinder"。
 BINDER_DEV="binder,hwbinder,vndbinder"
-if ! grep -q '^CONFIG_ANDROID_BINDER_DEVICES=' .config; then
-    echo "CONFIG_ANDROID_BINDER_DEVICES=\"$BINDER_DEV\"" >> .config
-    make ARCH=arm64 HOSTCC="$HOSTCC_FIX" HOSTCFLAGS="$HOSTCFLAGS_FIX" olddefconfig >/dev/null 2>&1 || true
-fi
-if grep -q '^CONFIG_ANDROID_BINDER_DEVICES=' .config; then
-    echo "binder 设备: $(grep '^CONFIG_ANDROID_BINDER_DEVICES=' .config)"
-else
-    warn "CONFIG_ANDROID_BINDER_DEVICES 仍然没写进 .config —— /dev/hwbinder 可能不会出现"
+echo "--- 诊断：树里哪里用到 ANDROID_BINDER_DEVICES ---"
+grep -rn "ANDROID_BINDER_DEVICES" drivers/ 2>/dev/null | head -20 || echo "  （drivers/ 下没有）"
+echo "--- binder 驱动文件 ---"
+ls drivers/staging/android/ 2>/dev/null | head -20 || echo "  （没有 drivers/staging/android）"
+
+BINDER_PATCHED=0
+for bf in drivers/staging/android/binder.c drivers/android/binder.c; do
+    if [ -f "$bf" ] && grep -q 'CONFIG_ANDROID_BINDER_DEVICES' "$bf"; then
+        sed -i "s/CONFIG_ANDROID_BINDER_DEVICES/\"$BINDER_DEV\"/g" "$bf"
+        echo "已把 $bf 里的 CONFIG_ANDROID_BINDER_DEVICES 换成字面量"
+        BINDER_PATCHED=1
+        # 打印改后的那几行，确认改对了
+        grep -n "binder,hwbinder,vndbinder" "$bf" | head -5 | sed 's/^/  /'
+    fi
+done
+if [ "$BINDER_PATCHED" = "0" ]; then
+    warn "没找到引用 CONFIG_ANDROID_BINDER_DEVICES 的 binder 源码，/dev/hwbinder 可能还是没有"
 fi
 
 # ★ 让新内核的 release 字符串和原厂一模一样。
@@ -586,10 +598,11 @@ if [ -f "$STOCK_BOOT" ]; then
 
     # 自检：内核里必须带 binder,hwbinder,vndbinder，否则 /dev/hwbinder 不会创建，
     # Android 8 的 HAL 全部起不来（作者的内核里就有这个字符串）。
-    if ! grep -qa 'binder,hwbinder,vndbinder' "$IMG"; then
+    if grep -qa 'binder,hwbinder,vndbinder' "$IMG"; then
+        echo "自检通过：内核包含 binder,hwbinder,vndbinder"
+    else
         die "内核里没有 binder,hwbinder,vndbinder —— /dev/hwbinder 不会出现，HAL 起不来"
     fi
-    echo "自检通过：内核包含 binder,hwbinder,vndbinder"
     sha256sum "$OUT/boot.img" | tee "$OUT/boot.sha256"
 else
     warn "没有 inputs/boot.img，只输出裸内核，不生成可刷的 boot.img"
