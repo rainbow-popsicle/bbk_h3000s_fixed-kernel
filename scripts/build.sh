@@ -17,7 +17,7 @@
 set -euo pipefail
 
 # 脚本版本号：日志第 1 步会打印，用来确认跑的是不是最新版
-BUILD_SH_VERSION="v25-binder-miscdev"
+BUILD_SH_VERSION="v26-binder-check-fix"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${WORK:-$ROOT/work}"
@@ -585,10 +585,17 @@ if [ -f "$STOCK_BOOT" ]; then
 
     # 自检：内核里必须带 binder,hwbinder,vndbinder，否则 /dev/hwbinder 不会创建，
     # Android 8 的 HAL 全部起不来（作者的内核里就有这个字符串）。
-    if grep -qa 'binder,hwbinder,vndbinder' "$IMG"; then
-        echo "自检通过：内核包含 binder,hwbinder,vndbinder"
+    # 注意：补丁是三个独立的设备名（"binder" / "hwbinder" / "vndbinder"），
+    # 不是 Kconfig 里那种逗号连写的 "binder,hwbinder,vndbinder" 字符串。
+    HB=0
+    VB=0
+    grep -qa 'hwbinder' "$IMG" && HB=1
+    grep -qa 'vndbinder' "$IMG" && VB=1
+    echo "自检：内核里 hwbinder=$HB vndbinder=$VB"
+    if [ "$HB" = "1" ] && [ "$VB" = "1" ]; then
+        echo "自检通过：hwbinder / vndbinder 设备名都在内核里"
     else
-        die "内核里没有 binder,hwbinder,vndbinder —— /dev/hwbinder 不会出现，HAL 起不来"
+        die "内核里缺 hwbinder 或 vndbinder —— /dev/hwbinder 不会出现，HAL 起不来"
     fi
     sha256sum "$OUT/boot.img" | tee "$OUT/boot.sha256"
 else
