@@ -15,7 +15,7 @@
 set -euo pipefail
 
 # 脚本版本号：日志第 1 步会打印，用来确认跑的是不是最新版
-BUILD_SH_VERSION="v9-triple-layer-pie-fix"
+BUILD_SH_VERSION="v10-hostcc-wrapper"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${WORK:-$ROOT/work}"
@@ -40,6 +40,20 @@ JOBS="${JOBS:-$(nproc)}"
 #       这种子 make 里去；写进 Makefile 或 export 都不保证生效。
 HOSTCFLAGS_FIX="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -fcommon -fno-PIE -no-pie"
 export HOSTCFLAGS_FIX
+
+# 终极手段：包一层 gcc。
+# 试过 HOSTCFLAGS（命令行、Makefile、export）都没用——scripts/kconfig 那套
+# Makefile 有自己的一套变量，不吃 HOSTCFLAGS。那就让"编译器本身"带 flag，
+# 任何 Makefile 都绕不过去。
+mkdir -p "$WORK"
+cat > "$WORK/hostcc.sh" <<'WRAPEOF'
+#!/bin/sh
+# 由 build.sh 注入：老内核宿主工具需要 -fcommon/-fno-PIE/-no-pie
+exec gcc -fcommon -fno-PIE -no-pie "$@"
+WRAPEOF
+chmod +x "$WORK/hostcc.sh"
+HOSTCC_FIX="$WORK/hostcc.sh"
+export HOSTCC_FIX
 
 mkdir -p "$WORK" "$OUT"
 
@@ -281,8 +295,8 @@ if [ ! -f .config ]; then
         ls arch/arm64/configs/ 2>/dev/null | grep '_defconfig$' | sed 's/^/  /' | head -30
         die "请把 DEFCONFIG 改成上面某个名字，或把外部 defconfig 放到 inputs/defconfig"
     fi
-    echo "将执行: make ARCH=arm64 HOSTCFLAGS=\"$HOSTCFLAGS_FIX\" $DEFCONFIG"
-    make ARCH=arm64 HOSTCFLAGS="$HOSTCFLAGS_FIX" "$DEFCONFIG"
+    echo "将执行: make ARCH=arm64 HOSTCC=$HOSTCC_FIX $DEFCONFIG"
+    make ARCH=arm64 HOSTCC="$HOSTCC_FIX" HOSTCFLAGS="$HOSTCFLAGS_FIX" "$DEFCONFIG"
 fi
 
 # 老内核 + 新环境常见的几处坑，按需兜底开启，保证能过编译
@@ -292,7 +306,7 @@ enable() {
 enable CONFIG_IKCONFIG
 enable CONFIG_IKCONFIG_PROC
 
-make ARCH=arm64 HOSTCFLAGS="$HOSTCFLAGS_FIX" olddefconfig
+make ARCH=arm64 HOSTCC="$HOSTCC_FIX" HOSTCFLAGS="$HOSTCFLAGS_FIX" olddefconfig
 
 # ★ 让新内核的 release 字符串和原厂一模一样。
 # 这不是洁癖：MTK 的 vendor 分区里有预编译内核模块（比如 wlan.ko），
@@ -314,7 +328,7 @@ if [ -n "$STOCK_VER" ]; then
 else
     warn "没读到原厂内核版本字符串，跳过 LOCALVERSION 对齐"
 fi
-make ARCH=arm64 HOSTCFLAGS="$HOSTCFLAGS_FIX" olddefconfig
+make ARCH=arm64 HOSTCC="$HOSTCC_FIX" HOSTCFLAGS="$HOSTCFLAGS_FIX" olddefconfig
 grep -E '^CONFIG_LOCALVERSION' .config || true
 
 # 把和上次链接失败相关的开关打出来，方便下一轮定位到底缺哪个提供者
@@ -368,7 +382,7 @@ fi
 step "5/6 编译（-j$JOBS，目标 $KERNEL_TARGET）"
 BUILD_LOG="$OUT/build.log"
 set +e
-make ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" HOSTCFLAGS="$HOSTCFLAGS_FIX" \
+make ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" HOSTCC="$HOSTCC_FIX" HOSTCFLAGS="$HOSTCFLAGS_FIX" \
         -j"$JOBS" "$KERNEL_TARGET" 2>&1 | tee "$BUILD_LOG"
 RC=${PIPESTATUS[0]}
 set -e
