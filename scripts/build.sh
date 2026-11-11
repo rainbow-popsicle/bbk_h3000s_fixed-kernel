@@ -358,6 +358,52 @@ else
     warn "scripts/patch_binder.py 不存在，/dev/hwbinder 仍然不会有"
 fi
 
+# ★★ 光多注册两个 misc 设备还不够：这棵树的 context manager 是全局静态变量，
+#    三个设备共用同一个，结果第二个 BINDER_SET_CONTEXT_MGR 直接 -EBUSY。
+#    设备实测（作者内核能显示、我们的黑屏）：
+#      vndservicemanager: binder: BINDER_SET_CONTEXT_MGR already set  → -16
+#      hwservicemanager:  binder: BINDER_SET_CONTEXT_MGR already set  → -16
+#    → vndservicemanager 起不来 → vendor HAL 注册全失败(-2147483648)
+#    → SurfaceFlinger 拿不到 gralloc → IMGeglMakeCurrent 崩 → 黑屏
+#
+#    这里把 context 改成「每设备独立」（对齐 AOSP 8.1 的 binder_device 做法）。
+if [ -f "$ROOT/scripts/patch_binder_multi.py" ]; then
+    echo "--- 给 binder 驱动补『每设备独立 context』 ---"
+    "$PY" "$ROOT/scripts/patch_binder_multi.py" drivers/staging/android/binder.c \
+        || die "binder 多 context 补丁失败"
+    # 立刻自检，别等到编译完才发现
+    if grep -q 'S3PRO_MULTI_BINDER_CONTEXT' drivers/staging/android/binder.c \
+       && grep -q 'proc->context->binder_context_mgr_node' drivers/staging/android/binder.c \
+       && ! grep -qE '^[[:space:]]*static struct binder_node \*binder_context_mgr_node;' drivers/staging/android/binder.c; then
+        echo "binder 多 context 补丁自检：通过"
+    else
+        die "binder 多 context 补丁自检失败（标记/引用/旧全局变量检查不通过）"
+    fi
+else
+    warn "scripts/patch_binder_multi.py 不存在 —— 只有 hwbinder/vndbinder 设备，context 仍是共用的"
+fi
+
+# ★★ 还有一处更致命的：8.1 的 libbinder / hwbinder 用 BC_TRANSACTION_SG（命令 17/18）
+#    发送事务，而这棵树的 binder 是 Android 6/7 那一代，压根没有 SG 命令。
+#    设备实测（我们的内核）：
+#      binder: 506:506 unknown command 1078485777   ← 0x40486311 = BC_TRANSACTION_SG
+#      binder: 506:506 ioctl c0306201 ... returned -22
+#    共 603 次，全部落在 HAL / SurfaceFlinger 进程上 → binder 通信全断。
+#    作者能显示的内核里，这种报错是 0 次。
+if [ -f "$ROOT/scripts/patch_binder_sg.py" ]; then
+    echo "--- 给 binder 驱动补 BC_TRANSACTION_SG / BC_REPLY_SG ---"
+    "$PY" "$ROOT/scripts/patch_binder_sg.py" . || die "binder SG 补丁失败"
+    if grep -q 'S3PRO_BINDER_SG_CASE' drivers/staging/android/binder.c \
+       && grep -q 'BC_TRANSACTION_SG' drivers/staging/android/uapi/binder.h \
+       && grep -q 'struct binder_transaction_data_sg' drivers/staging/android/uapi/binder.h; then
+        echo "binder SG 补丁自检：通过"
+    else
+        die "binder SG 补丁自检失败（标记/枚举/结构体检查不通过）"
+    fi
+else
+    warn "scripts/patch_binder_sg.py 不存在 —— SG 事务仍然会被 -EINVAL 拒绝"
+fi
+
 # ★ 让新内核的 release 字符串和原厂一模一样。
 # 这不是洁癖：MTK 的 vendor 分区里有预编译内核模块（比如 wlan.ko），
 # 加载时会比对 vermagic/`uname -r`，release 对不上就直接模块加载失败（WiFi 死、相机死）。
@@ -611,6 +657,32 @@ if [ -f "$STOCK_BOOT" ]; then
         echo "自检通过：hwbinder / vndbinder 设备名都在内核里"
     else
         die "内核里缺 hwbinder 或 vndbinder —— /dev/hwbinder 不会出现，HAL 起不来"
+    fi
+    # ★ 多 context 补丁是否真的编进去了：找 binder_init 里那条 pr_info
+    MC=0
+    if [ -f "$CHK" ]; then
+        grep -qa 'multi-context ready' "$CHK" && MC=1
+    else
+        gzip -dc "$IMG" 2>/dev/null | grep -qa 'multi-context ready' && MC=1
+    fi
+    echo "自检（多 context）: multi-context=$MC"
+    if [ "$MC" = "1" ]; then
+        echo "自检通过：每设备独立 context 已编入内核"
+    else
+        die "内核里没有 multi-context 标记 —— binder context 仍是共用的，/dev/hwbinder 会被 -EBUSY 挡掉"
+    # ★ SG 补丁是否编进去了：找 case 里那条 pr_err 的格式串
+    SG=0
+    if [ -f "$CHK" ]; then
+        grep -qa 'BC_TRANSACTION_SG buffers_size' "$CHK" && SG=1
+    else
+        gzip -dc "$IMG" 2>/dev/null | grep -qa 'BC_TRANSACTION_SG buffers_size' && SG=1
+    fi
+    echo "自检（SG 事务）: sg=$SG"
+    if [ "$SG" = "1" ]; then
+        echo "自检通过：BC_TRANSACTION_SG / BC_REPLY_SG 已编入内核"
+    else
+        die "内核里没有 SG 处理 —— 8.1 的 binder 事务会被 -EINVAL 拒绝，HAL 全废"
+    fi
     fi
     sha256sum "$OUT/boot.img" | tee "$OUT/boot.sha256"
 else
