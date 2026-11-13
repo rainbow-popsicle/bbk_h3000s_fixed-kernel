@@ -131,6 +131,27 @@ def main():
     # 找到该函数前的注释块起点，尽量插在函数定义之前
     t = t[:gi] + FWD + t[gi:]
 
+    # ---- 4) 关掉 ESD 自检 ----
+    # 实机日志（黑屏那版）：
+    #   [2.895] display_esd_che → primary_display_esd_recovery
+    #   [2.911]   ddp_dsi_stop → DSI_Reset → disp_lcm_init ...
+    #   [3.140]   disp_lcm_suspend（初始化刚做完就被断电）
+    # 驱动里 ESD 读寄存器 0x0A 期望 0x9C（lcm_get_params 里 lcm_esd_check_table[0]），
+    # 读不到就判定面板挂了 → 反复 stop/init/suspend 死循环，画面永远出不来。
+    # 作者内核全程 0 次 esd_recovery。先关掉 ESD，让面板保持在初始化后的状态。
+    esd_n = 0
+    for old, new in (
+        ("params->dsi.esd_check_enable = 1;",
+         "params->dsi.esd_check_enable = 0;\t/* S3PRO_ESD_OFF: 关掉 ESD，避免 recovery 死循环 */"),
+        ("params->dsi.customization_esd_check_enable = 1;",
+         "params->dsi.customization_esd_check_enable = 0;\t/* S3PRO_ESD_OFF */"),
+    ):
+        if old in t:
+            t = t.replace(old, new, 1)
+            esd_n += 1
+    if esd_n == 0:
+        print("  ! 没找到 esd_check_enable 赋值，跳过 ESD 关闭")
+
     if dry:
         print("  [dry-run] 将插入上电调用与前置声明（未写文件）")
         i2 = t.find(MARK)
@@ -140,13 +161,14 @@ def main():
 
     open(path, "w", encoding="utf-8", errors="surrogateescape", newline="").write(t)
 
-    # ---- 4) 校验 ----
+    # ---- 5) 校验 ----
     c = open(path, encoding="utf-8", errors="surrogateescape").read()
     checks = {
         "lcm_init 里调用 lcm_resume_power()": "lcm_resume_power();" in c,
         "lcm_init 里调用 lcm_resume()": "lcm_resume();" in c,
         "有前置声明": "static void lcm_resume(void);" in c,
         "标记已写入": MARK in c,
+        "ESD 已关闭": "params->dsi.esd_check_enable = 0;" in c,
         "花括号配平": c.count("{") == c.count("}"),
     }
     print()
