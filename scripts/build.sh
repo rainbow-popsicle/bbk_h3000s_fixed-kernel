@@ -37,6 +37,8 @@ STOCK_BOOT="${STOCK_BOOT:-$ROOT/inputs/boot.img}"
 INPUT_CONFIG="${INPUT_CONFIG:-$ROOT/inputs/config.txt}"
 INPUT_DEFCONFIG="${INPUT_DEFCONFIG:-$ROOT/inputs/defconfig}"
 INPUT_DTB="${INPUT_DTB:-$ROOT/inputs/boot.dtb}"
+# 作者出货内核的 DTB（触控节点 cap_touch，和树里的 GT911 驱动匹配）优先于树里编的 FIXED5 DTS
+USE_INPUT_DTB="${USE_INPUT_DTB:-1}"
 TOOLCHAIN="${TOOLCHAIN:-gcc49}"
 JOBS="${JOBS:-$(nproc)}"
 
@@ -205,7 +207,14 @@ echo "提交时间: $(git log -1 --format='%ci' 2>/dev/null || echo '-')"
 # 对不上，内核会直接起不来。
 AUTO_DTB=0
 if [ "${KERNEL_TARGET_KEEP:-0}" != "1" ] && [ "$KERNEL_TARGET" = "Image" ]; then
-    if ls arch/arm64/boot/dts/*h3000s* >/dev/null 2>&1; then
+    if [ "${USE_INPUT_DTB:-0}" = "1" ] && [ -s "$INPUT_DTB" ]; then
+        # 优先用外部 DTB：树里的 h3000s.dts 等同于公开的 FIXED5，
+        # 而作者实际出货的内核用的是另一版 DTB（触控节点 cap_touch、带 reg-vcamio-p2-supply），
+        # 想和他那套“能显示”的硬件配置完全对齐，就必须用他 boot.img 里拆出来的这份。
+        echo "使用外部 DTB（$INPUT_DTB，$(stat -c%s "$INPUT_DTB" 2>/dev/null || wc -c < "$INPUT_DTB") 字节），不再编树里的 DTS"
+        echo "编译目标保持 Image.gz，打包时把这份 DTB 追加进去"
+        KERNEL_TARGET="Image.gz"
+    elif ls arch/arm64/boot/dts/*h3000s* >/dev/null 2>&1; then
         KERNEL_TARGET="Image.gz-dtb"
         AUTO_DTB=1
         echo "发现自带 DTS: $(ls arch/arm64/boot/dts/*h3000s* | tr '\n' ' ')"
@@ -300,6 +309,38 @@ if [ -f "$INPUT_CONFIG" ]; then
     echo "使用你提供的 .config（来自 /proc/config.gz 之类）：$(grep -c '^CONFIG_' .config || true) 项"
 fi
 
+# ★ Android 8.1 的 HAL 全靠 /dev/hwbinder 与 /dev/vndbinder，而且 8.1 的
+#   libbinder/hwbinder 会发 BC_TRANSACTION_SG（命令 17）并携带 BINDER_TYPE_PTR /
+#   BINDER_TYPE_FDA 对象。本树自带的 binder 是 Android 6/7 时代的老驱动
+#   （单文件、单 context、无 SG、无 PTR/FDA）。实机日志证据：
+#     23 次  binder: BINDER_SET_CONTEXT_MGR already set          (-EBUSY)
+#     603 次 binder: unknown command 1078485777                  (=0x40486311, SG)
+#     241 次 BC_TRANSACTION_SG buffers_size=24/80/88/96/104      (无法投递)
+#   结果：vndservicemanager 起不来 → vendor HAL 注册全失败(-2147483648)
+#         → SurfaceFlinger 拿不到 gralloc → IMGeglMakeCurrent 崩 → 黑屏。
+#
+#   所以整套换成 cappu（小米平板3，3.18.123）的现代 binder：
+#     多设备 context（默认 binder,hwbinder,vndbinder）+ SG + PTR/FDA 全套，
+#     仍是 3.18 时代 API（无 get_user_pages/refcount_t/kvmalloc/timer_setup），
+#     且本树已有 security_binder_* 四个钩子 → 可直接替换。
+if [ -f "$ROOT/scripts/patch_binder_modern.py" ]; then
+    echo "--- 安装现代 binder 驱动（多设备 context + SG + PTR/FDA）---"
+    "$PY" "$ROOT/scripts/patch_binder_modern.py" . \
+        --src "$ROOT/kernel-patches/binder-3.18" || die "现代 binder 安装失败"
+    # 安装后立刻自检
+    if grep -q 'binder_devices_param' drivers/staging/android/binder.c \
+       && grep -q 'BINDER_TYPE_PTR' drivers/staging/android/binder.c \
+       && grep -q 'binder_alloc.o' drivers/staging/android/Makefile \
+       && grep -q 'config ANDROID_BINDER_DEVICES' drivers/staging/android/Kconfig; then
+        echo "现代 binder 安装自检：通过"
+    else
+        die "现代 binder 安装自检失败（驱动/Makefile/Kconfig 检查不通过）"
+    fi
+else
+    die "scripts/patch_binder_modern.py 不存在 —— 老 binder 在 8.1 上跑不通"
+fi
+
+
 if [ -f "$STOCK_BOOT" ]; then
     BOOT_SIZE=$(stat -c%s "$STOCK_BOOT" || echo 0)
     echo "发现 boot.img（$BOOT_SIZE 字节），先做体检（同时用于对齐 release 版本）"
@@ -312,6 +353,8 @@ if [ -f "$STOCK_BOOT" ]; then
     "$PY" "$ROOT/scripts/bootimg.py" info "$STOCK_BOOT" | tee "$STOCK_INFO" || true
     STOCK_VER="$(grep -o 'Linux version [^ ]*' "$STOCK_INFO" | head -1 | awk '{print $3}' || true)"
     echo "原厂内核 release: ${STOCK_VER:-未知}"
+
+
     if [ ! -f .config ]; then
         if "$PY" "$ROOT/scripts/bootimg.py" config "$STOCK_BOOT" > "$WORK/stock.config" 2>/dev/null \
             && [ -s "$WORK/stock.config" ]; then
@@ -343,66 +386,6 @@ enable CONFIG_IKCONFIG_PROC
 
 make ARCH=arm64 HOSTCC="$HOSTCC_FIX" HOSTCFLAGS="$HOSTCFLAGS_FIX" olddefconfig
 
-# ★ Android 8 的 HAL 全靠 /dev/hwbinder 和 /dev/vndbinder 通信。
-#   这棵树是 MTK 魔改版 binder：drivers/staging/android/binder.c 里只注册了一个
-#   miscdevice("binder")，压根没有 hwbinder / vndbinder，Kconfig 里也没有
-#   ANDROID_BINDER_DEVICES 这个符号（实测追加配置会被 olddefconfig 丢掉）。
-#   结果：hwservicemanager 打不开 /dev/hwbinder 直接 abort → 所有 HAL 起不来
-#         → SurfaceFlinger 拿不到显示 HAL → 屏幕永远黑着。
-#
-#   所以用脚本给源码补上两个 miscdevice（只有新增，不改原有逻辑）。
-if [ -f "$ROOT/scripts/patch_binder.py" ]; then
-    echo "--- 给 binder 驱动补 hwbinder / vndbinder ---"
-    "$PY" "$ROOT/scripts/patch_binder.py" . || warn "binder 补丁失败"
-else
-    warn "scripts/patch_binder.py 不存在，/dev/hwbinder 仍然不会有"
-fi
-
-# ★★ 光多注册两个 misc 设备还不够：这棵树的 context manager 是全局静态变量，
-#    三个设备共用同一个，结果第二个 BINDER_SET_CONTEXT_MGR 直接 -EBUSY。
-#    设备实测（作者内核能显示、我们的黑屏）：
-#      vndservicemanager: binder: BINDER_SET_CONTEXT_MGR already set  → -16
-#      hwservicemanager:  binder: BINDER_SET_CONTEXT_MGR already set  → -16
-#    → vndservicemanager 起不来 → vendor HAL 注册全失败(-2147483648)
-#    → SurfaceFlinger 拿不到 gralloc → IMGeglMakeCurrent 崩 → 黑屏
-#
-#    这里把 context 改成「每设备独立」（对齐 AOSP 8.1 的 binder_device 做法）。
-if [ -f "$ROOT/scripts/patch_binder_multi.py" ]; then
-    echo "--- 给 binder 驱动补『每设备独立 context』 ---"
-    "$PY" "$ROOT/scripts/patch_binder_multi.py" drivers/staging/android/binder.c \
-        || die "binder 多 context 补丁失败"
-    # 立刻自检，别等到编译完才发现
-    if grep -q 'S3PRO_MULTI_BINDER_CONTEXT' drivers/staging/android/binder.c \
-       && grep -q 'proc->context->binder_context_mgr_node' drivers/staging/android/binder.c \
-       && ! grep -qE '^[[:space:]]*static struct binder_node \*binder_context_mgr_node;' drivers/staging/android/binder.c; then
-        echo "binder 多 context 补丁自检：通过"
-    else
-        die "binder 多 context 补丁自检失败（标记/引用/旧全局变量检查不通过）"
-    fi
-else
-    warn "scripts/patch_binder_multi.py 不存在 —— 只有 hwbinder/vndbinder 设备，context 仍是共用的"
-fi
-
-# ★★ 还有一处更致命的：8.1 的 libbinder / hwbinder 用 BC_TRANSACTION_SG（命令 17/18）
-#    发送事务，而这棵树的 binder 是 Android 6/7 那一代，压根没有 SG 命令。
-#    设备实测（我们的内核）：
-#      binder: 506:506 unknown command 1078485777   ← 0x40486311 = BC_TRANSACTION_SG
-#      binder: 506:506 ioctl c0306201 ... returned -22
-#    共 603 次，全部落在 HAL / SurfaceFlinger 进程上 → binder 通信全断。
-#    作者能显示的内核里，这种报错是 0 次。
-if [ -f "$ROOT/scripts/patch_binder_sg.py" ]; then
-    echo "--- 给 binder 驱动补 BC_TRANSACTION_SG / BC_REPLY_SG ---"
-    "$PY" "$ROOT/scripts/patch_binder_sg.py" . || die "binder SG 补丁失败"
-    if grep -q 'S3PRO_BINDER_SG_CASE' drivers/staging/android/binder.c \
-       && grep -q 'BC_TRANSACTION_SG' drivers/staging/android/uapi/binder.h \
-       && grep -q 'struct binder_transaction_data_sg' drivers/staging/android/uapi/binder.h; then
-        echo "binder SG 补丁自检：通过"
-    else
-        die "binder SG 补丁自检失败（标记/枚举/结构体检查不通过）"
-    fi
-else
-    warn "scripts/patch_binder_sg.py 不存在 —— SG 事务仍然会被 -EINVAL 拒绝"
-fi
 
 # ★ 让新内核的 release 字符串和原厂一模一样。
 # 这不是洁癖：MTK 的 vendor 分区里有预编译内核模块（比如 wlan.ko），
@@ -658,31 +641,34 @@ if [ -f "$STOCK_BOOT" ]; then
     else
         die "内核里缺 hwbinder 或 vndbinder —— /dev/hwbinder 不会出现，HAL 起不来"
     fi
-    # ★ 多 context 补丁是否真的编进去了：找 binder_init 里那条 pr_info
+    # ★ 现代 binder 是否真的编进去了（两项检查，各自独立收尾）
+    #   标记 1：CONFIG_ANDROID_BINDER_DEVICES 的默认值，编译后是字符串字面量
     MC=0
     if [ -f "$CHK" ]; then
-        grep -qa 'multi-context ready' "$CHK" && MC=1
+        grep -qa 'binder,hwbinder,vndbinder' "$CHK" && MC=1
     else
-        gzip -dc "$IMG" 2>/dev/null | grep -qa 'multi-context ready' && MC=1
+        gzip -dc "$IMG" 2>/dev/null | grep -qa 'binder,hwbinder,vndbinder' && MC=1
     fi
-    echo "自检（多 context）: multi-context=$MC"
+    echo "自检（binder 设备名）: devices=$MC"
     if [ "$MC" = "1" ]; then
-        echo "自检通过：每设备独立 context 已编入内核"
+        echo "自检通过：binder,hwbinder,vndbinder 三设备（各自 context）已编入内核"
     else
-        die "内核里没有 multi-context 标记 —— binder context 仍是共用的，/dev/hwbinder 会被 -EBUSY 挡掉"
-    # ★ SG 补丁是否编进去了：找 case 里那条 pr_err 的格式串
+        die "内核里没有 binder 设备名默认值 —— 现代 binder 没装进去，/dev/hwbinder 会被 -EBUSY 挡掉"
+    fi
+
+    #   标记 2：现代 binder 的事务日志格式串带第三个尺寸（extra_buffers_size），
+    #           老驱动只有 data_size-offsets_size 两个，绝不会出现 %lld-%lld-%lld
     SG=0
     if [ -f "$CHK" ]; then
-        grep -qa 'BC_TRANSACTION_SG buffers_size' "$CHK" && SG=1
+        grep -qa 'size %lld-%lld-%lld' "$CHK" && SG=1
     else
-        gzip -dc "$IMG" 2>/dev/null | grep -qa 'BC_TRANSACTION_SG buffers_size' && SG=1
+        gzip -dc "$IMG" 2>/dev/null | grep -qa 'size %lld-%lld-%lld' && SG=1
     fi
-    echo "自检（SG 事务）: sg=$SG"
+    echo "自检（SG / extra_buffers_size）: sg=$SG"
     if [ "$SG" = "1" ]; then
-        echo "自检通过：BC_TRANSACTION_SG / BC_REPLY_SG 已编入内核"
+        echo "自检通过：BC_TRANSACTION_SG + extra_buffers_size 已编入内核"
     else
-        die "内核里没有 SG 处理 —— 8.1 的 binder 事务会被 -EINVAL 拒绝，HAL 全废"
-    fi
+        die "内核里没有 SG/extra_buffers_size 痕迹 —— 8.1 的 hwbinder 事务会被拒，HAL 全废"
     fi
     sha256sum "$OUT/boot.img" | tee "$OUT/boot.sha256"
 else
