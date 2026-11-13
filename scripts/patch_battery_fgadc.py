@@ -27,7 +27,11 @@
 import os
 import sys
 
-LINE = "obj-$(CONFIG_MTK_SMART_BATTERY) += mt6397_fgadc.o"
+LINE = "\n".join([
+    "obj-$(CONFIG_MTK_SMART_BATTERY) += mt6397_fgadc.o",
+    "# 该文件在本树里从未被编译过，可能带历史警告；本目录开了 -Werror，这里单独放宽",
+    "CFLAGS_mt6397_fgadc.o := -Wno-error",
+])
 MARK = "mt6397_fgadc.o"
 
 

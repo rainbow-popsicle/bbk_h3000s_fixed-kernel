@@ -459,6 +459,8 @@ if [ "${LCMPATCH:-1}" = "1" ]; then
         warn "在 $LCM_DIR 里没找到需要改的字符串，跳过"
     fi
 
+fi
+
 # ★ 面板初始化时序：本树驱动的 lcm_init() 是空壳（只取 GPIO），真正的
 #   上电+复位+下发初始化表全在 lcm_resume() 里，而 resume 要等 SurfaceFlinger
 #   打开显示（本机 81 秒）才第一次被调用。实测后果：
@@ -488,7 +490,6 @@ if [ -f "$ROOT/scripts/patch_battery_fgadc.py" ]; then
     "$PY" "$ROOT/scripts/patch_battery_fgadc.py" . || die "FGADC 补丁失败"
 else
     warn "scripts/patch_battery_fgadc.py 不存在 —— 电量会一直是 0%"
-fi
 fi
 grep -E '^CONFIG_LOCALVERSION' .config || true
 
