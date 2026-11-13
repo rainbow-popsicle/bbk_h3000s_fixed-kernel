@@ -458,6 +458,37 @@ if [ "${LCMPATCH:-1}" = "1" ]; then
     else
         warn "在 $LCM_DIR 里没找到需要改的字符串，跳过"
     fi
+
+# ★ 面板初始化时序：本树驱动的 lcm_init() 是空壳（只取 GPIO），真正的
+#   上电+复位+下发初始化表全在 lcm_resume() 里，而 resume 要等 SurfaceFlinger
+#   打开显示（本机 81 秒）才第一次被调用。实测后果：
+#     [80.9] primary_display_suspend -> dsi1 is busy
+#     [83.4] CMDQ SW timeout
+#     [84.4] CMDQ ERR timeout -> [DDP] dsi1_sel: Not Valid,Not Ready
+#     [之后] wait VSYNC timeout x485、underrun x16 -> GPU fence 永不完成 -> 黑屏
+#   作者内核在开机 0.638 秒就完成初始化（push full init table -> 面板点亮），
+#   全程 0 次 DSI 报错；我们这版 442 次 Not Ready、485 次 VSYNC 超时。
+#   修法：把 lcm_resume_power()+lcm_resume() 补进 lcm_init()，与作者行为对齐。
+if [ "${LCMPATCH:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_lcm_init.py" ]; then
+    echo "--- 修正面板初始化时序（把上电+初始化放进 lcm_init）---"
+    "$PY" "$ROOT/scripts/patch_lcm_init.py" . || die "面板初始化时序补丁失败"
+elif [ "${LCMPATCH:-1}" = "1" ]; then
+    warn "scripts/patch_lcm_init.py 不存在 —— 面板很可能仍然不亮"
+fi
+
+# ★ 电量显示 0%：本树 drivers/power/mt81xx/Makefile 漏了 mt6397_fgadc.o，
+#   导致 bm_ctrl_cmd() 没有真实实现，只能用 build.sh 注入的弱占位（永远返回 0）。
+#   而 battery_meter_get_battery_voltage() 里 `int val = 5;` 只是采样次数占位，
+#   调用没写回时就直接返回 5 → VBAT=5 → "VBAT < 3400" → UI_SOC 强制 0。
+#   实机证据：voltage_now=5000µV、capacity=0、temp=0，
+#             kallsyms 里 bm_ctrl_cmd 是 W（weak）。
+#   作者内核也是 0%，因为他同样绕过了这个缺失的 Makefile 条目。
+if [ -f "$ROOT/scripts/patch_battery_fgadc.py" ]; then
+    echo "--- 修电量显示（把真正的 MT6397 FGADC 驱动加入编译）---"
+    "$PY" "$ROOT/scripts/patch_battery_fgadc.py" . || die "FGADC 补丁失败"
+else
+    warn "scripts/patch_battery_fgadc.py 不存在 —— 电量会一直是 0%"
+fi
 fi
 grep -E '^CONFIG_LOCALVERSION' .config || true
 
@@ -490,7 +521,10 @@ if [ "${ALLOW_STUBS:-1}" = "1" ]; then
  * 原因：h3000s_defconfig 没有启用 bm_ctrl_cmd / sdio_start_ot_transfer 的提供者，
  * 链接 vmlinux 时报 undefined reference。weak 符号可被真实实现覆盖。
  */
-__attribute__((weak)) int bm_ctrl_cmd(void *arg) { (void)arg; return 0; }
+/* S3PRO: 签名必须与 mt_battery_meter_hal.h 里的声明一致；
+ * 真正的实现在 drivers/power/mt81xx/mt6397_fgadc.c（由 patch_battery_fgadc.py 加入编译），
+ * 强符号会覆盖这里的弱占位。签名写错会让电量一直读到占位值 5 → 0%。 */
+__attribute__((weak)) int bm_ctrl_cmd(int cmd, void *data) { (void)cmd; (void)data; return 0; }
 __attribute__((weak)) int sdio_stop_transfer(void *arg) { (void)arg; return 0; }
 __attribute__((weak)) int sdio_start_ot_transfer(void *arg) { (void)arg; return 0; }
 STUBEOF
