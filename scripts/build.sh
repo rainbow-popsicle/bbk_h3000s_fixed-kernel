@@ -461,21 +461,30 @@ if [ "${LCMPATCH:-1}" = "1" ]; then
 
 fi
 
-# ★ 面板初始化时序：本树驱动的 lcm_init() 是空壳（只取 GPIO），真正的
-#   上电+复位+下发初始化表全在 lcm_resume() 里，而 resume 要等 SurfaceFlinger
-#   打开显示（本机 81 秒）才第一次被调用。实测后果：
-#     [80.9] primary_display_suspend -> dsi1 is busy
-#     [83.4] CMDQ SW timeout
-#     [84.4] CMDQ ERR timeout -> [DDP] dsi1_sel: Not Valid,Not Ready
-#     [之后] wait VSYNC timeout x485、underrun x16 -> GPU fence 永不完成 -> 黑屏
-#   作者内核在开机 0.638 秒就完成初始化（push full init table -> 面板点亮），
-#   全程 0 次 DSI 报错；我们这版 442 次 Not Ready、485 次 VSYNC 超时。
-#   修法：把 lcm_resume_power()+lcm_resume() 补进 lcm_init()，与作者行为对齐。
-if [ "${LCMPATCH:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_lcm_init.py" ]; then
-    echo "--- 修正面板初始化时序（把上电+初始化放进 lcm_init）---"
+# ★ 面板初始化时序（实验性，默认关闭 LCM_INIT_PATCH=0）
+#
+#   背景：本树驱动的 lcm_init() 是空壳（只取 GPIO），真正的上电+复位+下发初始化表
+#   全在 lcm_resume() 里，而 resume 要等 SurfaceFlinger 打开显示（本机 81 秒）才
+#   第一次被调用。作者内核在开机 0.638 秒就完成初始化。
+#
+#   实机三轮结果（这是关键证据，别再盲目叠加）：
+#     v1 只做 sed 改名            → 有开机动画 ✅
+#     v2 + 本补丁（lcm_init 里初始化）→ 开机动画消失 ❌
+#     v3 + 关 ESD（本补丁内）      → 阴阳屏：左半纯黑、右半灰色虚线、渐变消失 ❌
+#
+#   结论：v2/v3 反而破坏了 v1 已经能工作的显示路径。原因是本树的面板驱动是
+#   nt35523_wqxga_dsi_vdo_sharp（1536x2048，双 DSI 拆 768+768），而原厂 DTB 的
+#   compatible 是 mediatek,nt35523_fhd，原厂内核里真正的驱动叫 nt35523_fhd_vdo_boe
+#   —— 这个驱动【不在本树里】，所以分辨率/时序/初始化表全都是错的。
+#   在拿到正确的面板驱动之前，不要动显示路径，保持 v1 的行为。
+#
+#   想要再试这个补丁：设 LCM_INIT_PATCH=1。
+if [ "${LCM_INIT_PATCH:-0}" = "1" ] && [ "${LCMPATCH:-1}" = "1" ] \
+   && [ -f "$ROOT/scripts/patch_lcm_init.py" ]; then
+    echo "--- [实验] 修正面板初始化时序（把上电+初始化放进 lcm_init）---"
     "$PY" "$ROOT/scripts/patch_lcm_init.py" . || die "面板初始化时序补丁失败"
-elif [ "${LCMPATCH:-1}" = "1" ]; then
-    warn "scripts/patch_lcm_init.py 不存在 —— 面板很可能仍然不亮"
+else
+    echo "跳过面板初始化时序补丁（LCM_INIT_PATCH=${LCM_INIT_PATCH:-0}）—— 保持能显示的 v1 行为"
 fi
 
 # ★ 电量显示 0%：本树 drivers/power/mt81xx/Makefile 漏了 mt6397_fgadc.o，
