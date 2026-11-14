@@ -88,6 +88,27 @@ static u32 s3pro_lcm_suspend_early = 1;
 static struct dentry *s3pro_skip_dent;
 static struct dentry *s3pro_reinit_dent;
 static struct dentry *s3pro_early_dent;
+static struct dentry *s3pro_readid_dent;
+
+/* S3PRO_DBG: 手动触发面板 DCS 回读（用于"面板健康时"的对照测量）
+ * 用法：echo 1 > /sys/kernel/debug/s3pro_read_id */
+extern void mtk_lcm_s3pro_readback(void) __attribute__((weak));
+
+static ssize_t s3pro_read_id_write(struct file *file, const char __user *buf,
+				   size_t count, loff_t *ppos)
+{
+	DISPMSG("S3PRO_DBG read_id: manual DCS readback\\n");
+	if (mtk_lcm_s3pro_readback)
+		mtk_lcm_s3pro_readback();
+	else
+		DISPMSG("S3PRO_DBG read_id: readback symbol not linked\\n");
+	return count;
+}
+
+static const struct file_operations s3pro_read_id_fops = {
+	.owner = THIS_MODULE,
+	.write = s3pro_read_id_write,
+};
 
 static void s3pro_dbg_init_once(void)
 {
@@ -100,6 +121,9 @@ static void s3pro_dbg_init_once(void)
 	if (s3pro_early_dent == NULL)
 		s3pro_early_dent = debugfs_create_u32("s3pro_lcm_suspend_early", 0644,
 						      NULL, &s3pro_lcm_suspend_early);
+	if (s3pro_readid_dent == NULL)
+		s3pro_readid_dent = debugfs_create_file("s3pro_read_id", 0200,
+							NULL, NULL, &s3pro_read_id_fops);
 }
 
 '''
@@ -203,7 +227,7 @@ SUSPEND_NEW = NODES_FUNC + SUSPEND_ANCHOR
 
 PD_PATCHES = [
     ('#include "disp_drv_log.h"',
-     '#include "disp_drv_log.h"\n#include <linux/debugfs.h>'),
+     '#include "disp_drv_log.h"\n#include <linux/debugfs.h>\n#include <linux/fs.h>'),
     # 节点函数必须放在文件靠前位置：primary_display_init 在第 2801 行就要调用它，
     # 若插在 primary_display_suspend（3184 行）之前会变成"先用后定义"。
     ('#include <linux/debugfs.h>',
@@ -294,6 +318,7 @@ def main():
         "skip_stop 节点": "s3pro_skip_stop" in p,
         "reinit 节点": "s3pro_reinit_on_resume" in p,
         "early_suspend 节点": "s3pro_lcm_suspend_early" in p,
+        "read_id 节点": "s3pro_read_id" in p,
         "节点定义在 init 之前": 0 <= nodes_at < init_at,
         "sleep 提前到关 DSI 之前": 0 <= early_at < stop_at,
         "原位置改为条件": "if (!s3pro_lcm_suspend_early)" in p,
