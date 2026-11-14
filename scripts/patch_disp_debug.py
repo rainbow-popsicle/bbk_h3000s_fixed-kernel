@@ -253,10 +253,12 @@ SUSPEND_NEW = NODES_FUNC + SUSPEND_ANCHOR
 PD_PATCHES = [
     ('#include "disp_drv_log.h"',
      '#include "disp_drv_log.h"\n#include <linux/debugfs.h>\n#include <linux/fs.h>'),
-    # 节点函数必须放在文件靠前位置：primary_display_init 在第 2801 行就要调用它，
-    # 若插在 primary_display_suspend（3184 行）之前会变成"先用后定义"。
-    ('#include <linux/debugfs.h>',
-     '#include <linux/debugfs.h>\n\n' + NODES_FUNC),
+    # 节点函数必须放在所有 include 之后：
+    #   1) primary_display_init（约 2800 行）要调用它 —— 不能放在它后面
+    #   2) 函数体用到 struct file / file_operations，依赖 <linux/fs.h>
+    #      —— 锚在 debugfs.h 上会把函数插到 fs.h 之前，类型未知导致编译失败
+    ('#include <linux/fs.h>',
+     '#include <linux/fs.h>\n\n' + NODES_FUNC),
     (INIT_ANCHOR, INIT_NEW),
     (SUSPEND_SKIP_ANCHOR, SUSPEND_SKIP_NEW),
     (EARLY_ANCHOR, EARLY_NEW),
