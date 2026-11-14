@@ -131,7 +131,7 @@ LCM_RESUME_BLOCK_NEW = (
 
 INIT_ANCHOR = "	pregulator = dev;\n	dprec_init();"
 INIT_NEW = "	pregulator = dev;\n	dprec_init();\n	s3pro_dbg_init_once();\n" \
-           '	DISPMSG("S3PRO_DBG init: debug nodes ready (skip_stop / reinit_on_resume)\n");'
+           '	DISPMSG("S3PRO_DBG init: debug nodes ready (skip_stop / reinit_on_resume)\\n");'
 
 SUSPEND_SKIP_ANCHOR = "	MMProfileLogEx(ddp_mmp_get_events()->primary_suspend, MMProfileFlagStart, 0, 0);"
 SUSPEND_SKIP_NEW = ('''	if (s3pro_skip_stop) {

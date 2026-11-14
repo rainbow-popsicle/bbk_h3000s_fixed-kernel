@@ -91,12 +91,10 @@ def main():
     old_items = old_block.count("},")
     print("  旧表: %d 行 / 约 %d 项" % (old_block.count("\n") + 1, old_items))
 
-    # 新表：加标记注释 + 正文
-    body = table.split("\n", 1)
-    header = body[0]
-    rest = body[1] if len(body) > 1 else ""
-    new_table = ("%s\n/* %s: 由 build.sh 用原厂内核提取的完整表替换（109 项） */\n%s"
-                 % (header, MARK, rest))
+    # 新表：标记注释放最前面（表文件可能以多行注释开头，不能拆行处理，
+    # 否则会产生嵌套注释 /* ... /* ... */，C 语言不允许）
+    new_table = ("/* %s: 由 build.sh 用 LK/原厂内核提取的完整面板初始化表替换 */\n%s"
+                 % (MARK, table.rstrip()))
 
     new_t = t.replace(old_block, new_table.rstrip(), 1)
     new_items = new_table.count("},")
