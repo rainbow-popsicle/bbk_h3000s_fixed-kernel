@@ -46,7 +46,7 @@ import sys
 MARK = "S3PRO_DBG"
 
 REGS_FUNC = '''/* S3PRO_DBG: DSI 寄存器快照，用于对比"能显示"与"黑屏"两种状态 */
-static void s3pro_dsi_regs(const char *tag)
+void s3pro_dsi_regs(const char *tag)
 {
 	int i;
 
@@ -68,6 +68,12 @@ static void s3pro_dsi_regs(const char *tag)
 			INREG32(&DSI_REG[i]->DSI_PHY_TIMECON0), INREG32(&DSI_REG[i]->DSI_PHY_TIMECON3),
 			INREG32(&DSI_REG[i]->DSI_VM_CMD_CON),
 			INREG32(&DSI_REG[i]->DSI_STATE_DBG0), INREG32(&DSI_REG[i]->DSI_STATE_DBG1));
+		DISPMSG("S3PRO_REG %s dsi%d D sta=%08x trig=%08x frmbc=%08x dbg2=%08x hs_tx=%u ctl=%u\\n",
+			tag, i,
+			INREG32(&DSI_REG[i]->DSI_STA), INREG32(&DSI_REG[i]->DSI_TRIG_STA),
+			INREG32(&DSI_REG[i]->DSI_FRM_BC), INREG32(&DSI_REG[i]->DSI_STATE_DBG2),
+			(unsigned int)DSI_REG[i]->DSI_STATE_DBG0.DPHY_HS_TX_STATE_C,
+			(unsigned int)DSI_REG[i]->DSI_STATE_DBG0.DPHY_CTL_STATE_C);
 	}
 }
 
@@ -89,10 +95,26 @@ static struct dentry *s3pro_skip_dent;
 static struct dentry *s3pro_reinit_dent;
 static struct dentry *s3pro_early_dent;
 static struct dentry *s3pro_readid_dent;
+static struct dentry *s3pro_dsidump_dent;
 
 /* S3PRO_DBG: 手动触发面板 DCS 回读（用于"面板健康时"的对照测量）
  * 用法：echo 1 > /sys/kernel/debug/s3pro_read_id */
 extern void mtk_lcm_s3pro_readback(void) __attribute__((weak));
+
+extern void s3pro_dsi_regs(const char *tag);
+
+static ssize_t s3pro_dsi_dump_write(struct file *file, const char __user *buf,
+				    size_t count, loff_t *ppos)
+{
+	DISPMSG("S3PRO_DBG dsi_dump: manual register snapshot\\n");
+	s3pro_dsi_regs("manual");
+	return count;
+}
+
+static const struct file_operations s3pro_dsi_dump_fops = {
+	.owner = THIS_MODULE,
+	.write = s3pro_dsi_dump_write,
+};
 
 static ssize_t s3pro_read_id_write(struct file *file, const char __user *buf,
 				   size_t count, loff_t *ppos)
@@ -121,6 +143,9 @@ static void s3pro_dbg_init_once(void)
 	if (s3pro_early_dent == NULL)
 		s3pro_early_dent = debugfs_create_u32("s3pro_lcm_suspend_early", 0644,
 						      NULL, &s3pro_lcm_suspend_early);
+	if (s3pro_dsidump_dent == NULL)
+		s3pro_dsidump_dent = debugfs_create_file("s3pro_dsi_dump", 0200,
+							 NULL, NULL, &s3pro_dsi_dump_fops);
 	if (s3pro_readid_dent == NULL)
 		s3pro_readid_dent = debugfs_create_file("s3pro_read_id", 0200,
 							NULL, NULL, &s3pro_read_id_fops);
@@ -319,6 +344,7 @@ def main():
         "reinit 节点": "s3pro_reinit_on_resume" in p,
         "early_suspend 节点": "s3pro_lcm_suspend_early" in p,
         "read_id 节点": "s3pro_read_id" in p,
+        "dsi_dump 节点": "s3pro_dsi_dump" in p,
         "节点定义在 init 之前": 0 <= nodes_at < init_at,
         "sleep 提前到关 DSI 之前": 0 <= early_at < stop_at,
         "原位置改为条件": "if (!s3pro_lcm_suspend_early)" in p,
