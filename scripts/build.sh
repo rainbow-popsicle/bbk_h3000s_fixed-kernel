@@ -505,6 +505,22 @@ else
 fi
 
 
+# ★ 显示诊断打印（研究"熄屏唤醒后黑屏"用，默认开启）
+#   目的：在 ddp_dsi_start / ddp_dsi_stop 结束时打印硬件状态：
+#     mipitx  : MIPI TX PLL 是否使能
+#     dsiclk  : DSI 控制器时钟是否使能
+#     intsta  : DSI_INTSTA 原始寄存器（bit31 = busy）
+#   判读：唤醒后若 mipitx 或 dsiclk 为 0，说明 MIPI PLL/DSI 时钟没恢复，
+#         面板收不到信号 → 背光亮但无画面。这段只加 printk，不改逻辑。
+#   研究完成后设 DISP_DEBUG=0 关掉。
+if [ "${DISP_DEBUG:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_disp_debug.py" ]; then
+    echo "--- 加装显示诊断打印（DSI 启停状态）---"
+    "$PY" "$ROOT/scripts/patch_disp_debug.py" . || die "显示诊断补丁失败"
+else
+    echo "跳过显示诊断打印（DISP_DEBUG=${DISP_DEBUG:-1}）"
+fi
+
+
 # ★ 电量显示 0%：本树 drivers/power/mt81xx/Makefile 漏了 mt6397_fgadc.o，
 #   导致 bm_ctrl_cmd() 没有真实实现，只能用 build.sh 注入的弱占位（永远返回 0）。
 #   而 battery_meter_get_battery_voltage() 里 `int val = 5;` 只是采样次数占位，
