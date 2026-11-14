@@ -1,21 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""给 DSI 启停加上状态打印，用来定位"熄屏唤醒后黑屏"。
+"""显示诊断插桩：定位"熄屏唤醒后黑屏"。
 
-诊断对象：
-  ddp_dsi_start()  —— resume 时被调用（显示引擎启动）
-  ddp_dsi_stop()   —— suspend 时被调用（显示引擎停止）
+已确认的事实（实机 dmesg）：
+  开机时 primary_display_resume 因 state==DISP_ALIVE 直接返回，
+  面板驱动的 lcm_resume 从未被调用（lcm_resume enter = 0 次），
+  开机画面依赖 bootloader 初始化好的面板状态。
+  熄屏时我们的 lcm_suspend 会真的断电，唤醒时 lcm_resume 第一次真正
+  负责初始化面板 —— 然后黑屏。
 
-打印内容：
-  mipitx  : MIPI TX PLL 是否使能（MIPITX_IsEnabled）
-  dsiclk  : DSI 控制器时钟是否使能（DSI_ClkIsEnabled）
-  intsta0/1 : DSI0/DSI1 的 DSI_INTSTA 原始寄存器（bit31 = busy）
-  dualen    : DSI_COM_CTRL 的 DUAL_EN（双通道使能）
-
-判读方法：
-  正常 resume 后应看到 mipitx=2 dsiclk=2（两条 DSI 都在）
-  如果 mipitx=0 或 dsiclk=0 → MIPI PLL / DSI 时钟没恢复 → 面板收不到信号（黑屏）
-  如果 intsta 的 bit31 一直为 1 → DSI 卡在忙状态
+本补丁只在关键点加 DISPMSG 打印，不改任何逻辑：
+  ddp_dsi_start / ddp_dsi_stop 结束时：MIPI TX PLL、DSI 时钟、DSI_INTSTA
+  primary_display suspend/resume：状态机迁移与 lcm 回调时机
 
 用法：
     python patch_disp_debug.py <内核树根> [--dry-run]
@@ -23,46 +19,72 @@
 import os
 import sys
 
-MARK = "S3PRO_DISP_DBG"
+MARK = "S3PRO_DBG"
 
-START_ANCHOR = """		DSI_SetMode(module, cmdq, _dsi_context[i].dsi_params.mode);
-		DSI_clk_HS_mode(module, cmdq, true);
-	}
+DSI_TAIL = "	return 0;\n}\n\nint ddp_dsi_stop(DISP_MODULE_ENUM module, void *cmdq_handle)"
+DSI_TAIL_NEW = (
+    '	DISPMSG("S3PRO_DBG dsi_start_end: mipitx=%d dsiclk=%d intsta0=0x%08x intsta1=0x%08x\\n",\n'
+    '		MIPITX_IsEnabled(module, NULL), DSI_ClkIsEnabled(module, NULL),\n'
+    '		INREG32(&DSI_REG[0]->DSI_INTSTA), INREG32(&DSI_REG[1]->DSI_INTSTA));\n'
+    "\n" + DSI_TAIL
+)
 
-	return 0;
-}
-"""
+STOP_TAIL = "	return 0;\n}\n\nint ddp_dsi_switch_lcm_mode"
+STOP_TAIL_NEW = (
+    '	DISPMSG("S3PRO_DBG dsi_stop_end: mipitx=%d dsiclk=%d intsta0=0x%08x intsta1=0x%08x\\n",\n'
+    '		MIPITX_IsEnabled(module, NULL), DSI_ClkIsEnabled(module, NULL),\n'
+    '		INREG32(&DSI_REG[0]->DSI_INTSTA), INREG32(&DSI_REG[1]->DSI_INTSTA));\n'
+    "\n" + STOP_TAIL
+)
 
-START_NEW = """		DSI_SetMode(module, cmdq, _dsi_context[i].dsi_params.mode);
-		DSI_clk_HS_mode(module, cmdq, true);
-	}
+LCM_RESUME_BLOCK = (
+    '	DISPCHECK("[POWER]lcm resume[begin]\\n");\n'
+    '	disp_lcm_resume(pgc->plcm);\n'
+    '	DISPCHECK("[POWER]lcm resume[end]\\n");'
+)
+LCM_RESUME_BLOCK_NEW = (
+    '	DISPCHECK("[POWER]lcm resume[begin]\\n");\n'
+    '	DISPMSG("S3PRO_DBG resume: call lcm_resume, state=%d\\n", pgc->state);\n'
+    '	disp_lcm_resume(pgc->plcm);\n'
+    '	DISPMSG("S3PRO_DBG resume: lcm_resume returned\\n");\n'
+    '	DISPCHECK("[POWER]lcm resume[end]\\n");'
+)
 
-	/* S3PRO_DISP_DBG: 记录 start 结束时的硬件状态 */
-	pr_info("S3PRO_DBG start_end: mipitx=%d dsiclk=%d intsta0=0x%08x intsta1=0x%08x\\n",
-		MIPITX_IsEnabled(module, NULL), DSI_ClkIsEnabled(module, NULL),
-		INREG32(&DSI_REG[0]->DSI_INTSTA), INREG32(&DSI_REG[1]->DSI_INTSTA));
+PD_PATCHES = [
+    ('DISPCHECK("[POWER]lcm suspend[begin]\\n");\n\tdisp_lcm_suspend(pgc->plcm);',
+     'DISPCHECK("[POWER]lcm suspend[begin]\\n");\n'
+     '\tDISPMSG("S3PRO_DBG suspend: call lcm_suspend, state=%d\\n", pgc->state);\n'
+     '\tdisp_lcm_suspend(pgc->plcm);\n'
+     '\tDISPMSG("S3PRO_DBG suspend: lcm_suspend returned\\n");'),
+    ('\tpgc->state = DISP_SLEPT;',
+     '\tDISPMSG("S3PRO_DBG suspend: done -> SLEPT\\n");\n\tpgc->state = DISP_SLEPT;'),
+    (LCM_RESUME_BLOCK, LCM_RESUME_BLOCK_NEW),
+    ('DISPCHECK("[POWER]dpmgr path start[end]\\n");',
+     'DISPCHECK("[POWER]dpmgr path start[end]\\n");\n'
+     '\tDISPMSG("S3PRO_DBG resume: path started, state=%d\\n", pgc->state);'),
+]
 
-	return 0;
-}
-"""
 
-STOP_ANCHOR = """	DSI_clk_HS_mode(module, cmdq_handle, false);
-	return 0;
-}
-
-int ddp_dsi_switch_lcm_mode"""
-
-STOP_NEW = """	DSI_clk_HS_mode(module, cmdq_handle, false);
-
-	/* S3PRO_DISP_DBG: 记录 stop 结束时的硬件状态 */
-	pr_info("S3PRO_DBG stop_end: mipitx=%d dsiclk=%d intsta0=0x%08x intsta1=0x%08x\\n",
-		MIPITX_IsEnabled(module, NULL), DSI_ClkIsEnabled(module, NULL),
-		INREG32(&DSI_REG[0]->DSI_INTSTA), INREG32(&DSI_REG[1]->DSI_INTSTA));
-
-	return 0;
-}
-
-int ddp_dsi_switch_lcm_mode"""
+def patch_file(path, patches, dry, label):
+    if not os.path.exists(path):
+        return ["找不到文件: %s" % path]
+    t = open(path, encoding="utf-8", errors="surrogateescape").read()
+    if MARK in t:
+        print("  %s: 已打过补丁，跳过" % label)
+        return []
+    problems = []
+    for old, new in patches:
+        cnt = t.count(old)
+        if cnt != 1:
+            problems.append("%s: 锚点匹配 %d 次（应为 1）: %r" % (label, cnt, old[:70]))
+            continue
+        t = t.replace(old, new, 1)
+    if problems:
+        return problems
+    print("  %s: 已插入 %d 处打印" % (label, len(patches)))
+    if not dry:
+        open(path, "w", encoding="utf-8", errors="surrogateescape", newline="").write(t)
+    return []
 
 
 def main():
@@ -71,54 +93,48 @@ def main():
     tree = sys.argv[1]
     dry = "--dry-run" in sys.argv
 
-    path = os.path.join(tree, "drivers", "misc", "mediatek", "video", "mt8173",
-                        "dispsys", "ddp_dsi.c")
-    if not os.path.exists(path):
-        raise SystemExit("找不到 ddp_dsi.c：%s" % path)
+    dsi = os.path.join(tree, "drivers", "misc", "mediatek", "video", "mt8173",
+                       "dispsys", "ddp_dsi.c")
+    pd = os.path.join(tree, "drivers", "misc", "mediatek", "video", "mt8173",
+                      "videox", "primary_display.c")
 
-    t = open(path, encoding="utf-8", errors="surrogateescape").read()
-    if MARK in t:
-        print("  已打过诊断补丁（找到 %s），跳过" % MARK)
-        return 0
-
-    problems = []
-    for name, old, new in (("ddp_dsi_start", START_ANCHOR, START_NEW),
-                           ("ddp_dsi_stop", STOP_ANCHOR, STOP_NEW)):
-        cnt = t.count(old)
-        if cnt != 1:
-            problems.append("%s 锚点匹配 %d 次（应为 1 次）" % (name, cnt))
-            continue
-        t = t.replace(old, new, 1)
-        print("  %s: 已插入状态打印" % name)
+    problems = patch_file(dsi, [(DSI_TAIL, DSI_TAIL_NEW), (STOP_TAIL, STOP_TAIL_NEW)],
+                          dry, "ddp_dsi.c")
+    problems += patch_file(pd, PD_PATCHES, dry, "primary_display.c")
 
     if problems:
         print("\n!! 问题：")
         for p in problems:
             print("   - " + p)
         return 1
-
     if dry:
-        print("  [dry-run] 未写文件")
+        print("\n  [dry-run] 未写文件")
         return 0
 
-    open(path, "w", encoding="utf-8", errors="surrogateescape", newline="").write(t)
-
-    c = open(path, encoding="utf-8", errors="surrogateescape").read()
-    checks = {
-        "start 里的打印": "S3PRO_DBG start_end" in c,
-        "stop 里的打印": "S3PRO_DBG stop_end" in c,
-        "标记存在": MARK in c,
-        "花括号配平": c.count("{") == c.count("}"),
-    }
+    checks = {}
+    for label, path, key in (
+        ("ddp_dsi.c start", dsi, "S3PRO_DBG dsi_start_end"),
+        ("ddp_dsi.c stop", dsi, "S3PRO_DBG dsi_stop_end"),
+        ("primary_display.c suspend", pd, "S3PRO_DBG suspend"),
+        ("primary_display.c resume", pd, "S3PRO_DBG resume"),
+    ):
+        c = open(path, encoding="utf-8", errors="surrogateescape").read()
+        checks[label] = key in c
     print()
     bad = 0
     for k, v in checks.items():
-        print("    %-26s %s" % (k, "OK" if v else "失败!"))
+        print("    %-32s %s" % (k, "OK" if v else "失败!"))
         if not v:
+            bad += 1
+    for f in (dsi, pd):
+        c = open(f, encoding="utf-8", errors="surrogateescape").read()
+        ok = c.count("{") == c.count("}")
+        print("    %-32s %s" % (os.path.basename(f) + " 花括号", "OK" if ok else "失败!"))
+        if not ok:
             bad += 1
     if bad:
         return 1
-    print("\nDSI 状态诊断补丁完成")
+    print("\n显示诊断插桩完成")
     return 0
 
 
