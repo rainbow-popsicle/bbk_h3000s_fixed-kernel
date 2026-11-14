@@ -461,6 +461,25 @@ if [ "${LCMPATCH:-1}" = "1" ]; then
 
 fi
 
+# ★ 用原厂内核提取的完整初始化表替换驱动里的残缺表。
+#   证据链：
+#     1) 开机画面能显示，但 lcm_resume 从未被调用（靠 bootloader 初始化）
+#     2) 熄屏断电后，唤醒时 lcm_resume 第一次真正初始化面板 → 黑屏
+#     3) 诊断打印确认：唤醒后 mipitx=2 dsiclk=2、DSI 不 busy、
+#        面板 GPIO(985/987/1016) 全高、SurfaceFlinger 正常出图 —— 通路全好
+#     4) 原厂/作者内核的初始化表有 109 项（含 25 条 gamma + display-on 0x29），
+#        我们的表只有 12 项且内容不同 → 面板收不到有效配置
+#   表数据来自原厂 7.0 内核二进制（kernel-patches/lcm-table/nt35523_fhd_init.c）
+if [ "${LCM_TABLE:-1}" = "1" ] && [ "${LCMPATCH:-1}" = "1" ] \
+   && [ -f "$ROOT/scripts/patch_lcm_table.py" ]; then
+    echo "--- 替换面板初始化表（原厂完整版，109 项）---"
+    "$PY" "$ROOT/scripts/patch_lcm_table.py" . \
+        --table "$ROOT/kernel-patches/lcm-table/nt35523_fhd_init.c" || die "面板初始化表替换失败"
+else
+    echo "跳过面板初始化表替换（LCM_TABLE=${LCM_TABLE:-1}）"
+fi
+
+
 # ★ 面板初始化时序（实验性，默认关闭 LCM_INIT_PATCH=0）
 #
 #   背景：本树驱动的 lcm_init() 是空壳（只取 GPIO），真正的上电+复位+下发初始化表
