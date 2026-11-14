@@ -1,26 +1,41 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""显示诊断插桩 v5：节点开机即建 + 运行时实验开关 + 寄存器快照。
+"""显示修复 v6：把面板 sleep 命令提前到关闭 DSI 之前 + 诊断 + 运行时开关。
 
-实机已确认的事实链：
-  * 开机画面能显示：panel 由 bootloader 初始化，开机路径不调用 ddp_dsi_start。
-  * 第一次熄屏：primary_display_suspend 完整拆除（stop + 断电 + 面板 sleep-in）。
-  * 唤醒：lcm_resume 重推 109 项原厂表 → 仍然黑屏（只有背光）。
-  * 寄存器对比唯一差异 DSI_START（开机 1 / 唤醒 0），已在 patch_dsi_start.py 修复；
-    修复后实测唤醒 DSI_START=1，但屏幕**仍然黑**。
-  * 在视频流已启动后重推一次初始化表（reinit_on_resume=1）——仍然黑。
-  * skip_stop=1（不拆管线）——仍然黑，但这是**无效实验**：该节点原本是在
-    primary_display_suspend 里创建的，第一次熄屏时标志必然还是 0，
-    面板已经被拆过一次，之后再设 1 只是"防止二次拆卸"，救不回来。
+=== 实机证据链（这台设备实测） ===
+ 1. 开机画面正常：面板由 bootloader(LK) 初始化并点亮，内核开机路径不调用
+    ddp_dsi_start（实测 dsi_start=0 次）。
+ 2. 第一次熄屏后永久黑屏（只有背光）。
+ 3. 唤醒后寄存器逐字段对比，DSI 通路全部正常：
+       mipitx=2 dsiclk=2，DSI 不 busy，GPIO(985/987/1016) 全高，
+       COM_CTRL/MODE_CTRL/PHY_LCCON/全部 timing 一致。
+    唯一差异 DSI_START 已由 patch_dsi_start.py 修复（修复后实测 START=1）。
+ 4. 初始化表已换成 LK 的完整 132 项（含 0xFF AA55A580 解锁），
+    并在视频流启动后重推过一次 —— 仍然黑屏。
+ 5. 供电轨与工作状态一致（只有 DVFS 电压不同，均 enabled）。
+ 6. ★ 决定性实验：开机后立刻写 skip_stop=1（完全不拆显示管线，只关背光），
+    熄屏→唤醒后 **屏幕正常显示** → 面板本身没问题，
+    问题 100% 出在 "拆卸 → 重建" 这条链路。
 
-本补丁 v5 的关键改动：
-  把两个 debugfs 节点提前到 **primary_display_init** 阶段创建，
-  这样开机后（面板还处于 bootloader 初始化好的正常状态、还没熄过屏）
-  就能先把 skip_stop=1 写进去，再做"完全不拆管线"的干净实验。
+=== 由此定位到的具体错误：顺序 ===
+  primary_display_suspend() 的原始顺序：
+      3256  _cmdq_stop_trigger_loop();      停 CMDQ
+      3261  dpmgr_path_stop();              停 DSI ← 数据通路没了
+      3279  disp_lcm_suspend();             才发 0x28/0x10 ← 命令被丢弃
+      3290  dpmgr_path_power_off();         断电
+  → 面板的"进入休眠"命令在 DSI 停止之后才发，根本没有通路，
+    于是面板以**完全清醒**的状态被硬断电，内部电源时序状态机没复位，
+    之后再上电 + 推表也起不来。
 
-节点：
-  /sys/kernel/debug/s3pro_skip_stop          写 1 → 熄屏时不拆显示管线
-  /sys/kernel/debug/s3pro_reinit_on_resume   写 1 → 唤醒后在 start 之后重推表
+=== 本补丁做的事 ===
+ 把 disp_lcm_suspend() 提前到 _cmdq_stop_trigger_loop() 之前执行，
+ 让面板先干净地进入 sleep，再停 DSI、再断电。
+ 原位置改为条件跳过（可用 debugfs 关掉以回归旧行为）。
+
+节点（普通 u32，默认值见注释）：
+  s3pro_skip_stop           默认 0；写 1 → 熄屏完全不拆管线（仅诊断用）
+  s3pro_reinit_on_resume    默认 0；写 1 → 唤醒后 start 之后再推一次表
+  s3pro_lcm_suspend_early   默认 1；写 0 → 回到"先停 DSI 再发 sleep"的旧顺序
 
 用法：
     python patch_disp_debug.py <内核树根> [--dry-run]
@@ -58,19 +73,21 @@ static void s3pro_dsi_regs(const char *tag)
 
 '''
 
-# 节点定义（放在文件靠前位置，保证 primary_display_init 能用）
-NODES_FUNC = '''/* S3PRO_DBG: 运行时实验节点（普通 u32，默认 0 = 不改变行为）
+NODES_FUNC = '''/* S3PRO_DBG: 运行时开关（普通 u32）
  *
- * s3pro_skip_stop         写 1 → 熄屏时不拆显示管线（等同作者内核）
- * s3pro_reinit_on_resume  写 1 → 唤醒后在 dsi_start 之后重推面板初始化表
+ * s3pro_skip_stop          默认 0：写 1 → 熄屏完全不拆显示管线（仅诊断用）
+ * s3pro_reinit_on_resume   默认 0：写 1 → 唤醒后 start 之后再推一次初始化表
+ * s3pro_lcm_suspend_early  默认 1：面板 sleep 命令是否提前到关 DSI 之前
+ *                                 写 0 → 回到旧顺序（先停 DSI 再发 sleep）
  *
- * 注意：本函数在 primary_display_init 里就会被调用一次，
- * 因此开机后立即可写这两个节点，不必等第一次熄屏。
+ * 本函数在 primary_display_init 里调用，所以开机后立即可用。
  */
 static u32 s3pro_skip_stop;
 static u32 s3pro_reinit_on_resume;
+static u32 s3pro_lcm_suspend_early = 1;
 static struct dentry *s3pro_skip_dent;
 static struct dentry *s3pro_reinit_dent;
+static struct dentry *s3pro_early_dent;
 
 static void s3pro_dbg_init_once(void)
 {
@@ -80,6 +97,9 @@ static void s3pro_dbg_init_once(void)
 	if (s3pro_reinit_dent == NULL)
 		s3pro_reinit_dent = debugfs_create_u32("s3pro_reinit_on_resume", 0644,
 						       NULL, &s3pro_reinit_on_resume);
+	if (s3pro_early_dent == NULL)
+		s3pro_early_dent = debugfs_create_u32("s3pro_lcm_suspend_early", 0644,
+						      NULL, &s3pro_lcm_suspend_early);
 }
 
 '''
@@ -129,9 +149,47 @@ LCM_RESUME_BLOCK_NEW = (
     '	DISPCHECK("[POWER]lcm resume[end]\\n");'
 )
 
+# ---- 核心修复 1：把 sleep 命令提前到关 DSI 之前 ----
+EARLY_ANCHOR = (
+    '	DISPCHECK("[POWER]display cmdq trigger loop stop[begin]\\n");\n'
+    '	_cmdq_stop_trigger_loop();'
+)
+EARLY_NEW = (
+    '	DISPCHECK("[POWER]display cmdq trigger loop stop[begin]\\n");\n'
+    '	/* S3PRO_LCM_EARLY_SUSPEND: 面板的 display-off(0x28)/sleep-in(0x10)\n'
+    '	 * 必须在关闭 DSI 之前发出去。原代码把 disp_lcm_suspend 放在\n'
+    '	 * dpmgr_path_stop 之后，命令没有数据通路、被面板丢弃，面板会以\n'
+    '	 * "完全清醒"状态被断电，之后重新上电初始化不起来（实测永久黑屏）。\n'
+    '	 * 出问题时 echo 0 > /sys/kernel/debug/s3pro_lcm_suspend_early 可回退。 */\n'
+    '	if (s3pro_lcm_suspend_early) {\n'
+    '		DISPMSG("S3PRO_DBG suspend: lcm_suspend BEFORE dsi stop\\n");\n'
+    '		disp_lcm_suspend(pgc->plcm);\n'
+    '		DISPMSG("S3PRO_DBG suspend: early lcm_suspend done\\n");\n'
+    '	}\n'
+    '	_cmdq_stop_trigger_loop();'
+)
+
+# ---- 原位置的 lcm_suspend 改为条件执行 ----
+LCM_SUSPEND_BLOCK = (
+    '	DISPCHECK("[POWER]lcm suspend[begin]\\n");\n'
+    '	disp_lcm_suspend(pgc->plcm);\n'
+    '	DISPCHECK("[POWER]lcm suspend[end]\\n");'
+)
+LCM_SUSPEND_BLOCK_NEW = (
+    '	DISPCHECK("[POWER]lcm suspend[begin]\\n");\n'
+    '	if (!s3pro_lcm_suspend_early) {\n'
+    '		DISPMSG("S3PRO_DBG suspend: call lcm_suspend here, state=%d\\n", pgc->state);\n'
+    '		disp_lcm_suspend(pgc->plcm);\n'
+    '		DISPMSG("S3PRO_DBG suspend: lcm_suspend returned\\n");\n'
+    '	} else {\n'
+    '		DISPMSG("S3PRO_DBG suspend: skipped here (already done before dsi stop)\\n");\n'
+    '	}\n'
+    '	DISPCHECK("[POWER]lcm suspend[end]\\n");'
+)
+
 INIT_ANCHOR = "	pregulator = dev;\n	dprec_init();"
-INIT_NEW = "	pregulator = dev;\n	dprec_init();\n	s3pro_dbg_init_once();\n" \
-           '	DISPMSG("S3PRO_DBG init: debug nodes ready (skip_stop / reinit_on_resume)\\n");'
+INIT_NEW = ("	pregulator = dev;\n	dprec_init();\n	s3pro_dbg_init_once();\n"
+            '	DISPMSG("S3PRO_DBG init: debug nodes ready\\n");')
 
 SUSPEND_SKIP_ANCHOR = "	MMProfileLogEx(ddp_mmp_get_events()->primary_suspend, MMProfileFlagStart, 0, 0);"
 SUSPEND_SKIP_NEW = ('''	if (s3pro_skip_stop) {
@@ -140,18 +198,17 @@ SUSPEND_SKIP_NEW = ('''	if (s3pro_skip_stop) {
 	}
 ''' + SUSPEND_SKIP_ANCHOR)
 
+SUSPEND_ANCHOR = "int primary_display_suspend(void)\n{\n"
+SUSPEND_NEW = NODES_FUNC + SUSPEND_ANCHOR
+
 PD_PATCHES = [
     ('#include "disp_drv_log.h"',
      '#include "disp_drv_log.h"\n#include <linux/debugfs.h>'),
-    ('#include <linux/debugfs.h>',
-     '#include <linux/debugfs.h>\n\n' + NODES_FUNC),
+    (SUSPEND_ANCHOR, SUSPEND_NEW),
     (INIT_ANCHOR, INIT_NEW),
     (SUSPEND_SKIP_ANCHOR, SUSPEND_SKIP_NEW),
-    ('DISPCHECK("[POWER]lcm suspend[begin]\\n");\n\tdisp_lcm_suspend(pgc->plcm);',
-     'DISPCHECK("[POWER]lcm suspend[begin]\\n");\n'
-     '\tDISPMSG("S3PRO_DBG suspend: call lcm_suspend, state=%d\\n", pgc->state);\n'
-     '\tdisp_lcm_suspend(pgc->plcm);\n'
-     '\tDISPMSG("S3PRO_DBG suspend: lcm_suspend returned\\n");'),
+    (EARLY_ANCHOR, EARLY_NEW),
+    (LCM_SUSPEND_BLOCK, LCM_SUSPEND_BLOCK_NEW),
     ('\tpgc->state = DISP_SLEPT;',
      '\tDISPMSG("S3PRO_DBG suspend: done -> SLEPT\\n");\n\tpgc->state = DISP_SLEPT;'),
     (LCM_RESUME_BLOCK, LCM_RESUME_BLOCK_NEW),
@@ -222,9 +279,10 @@ def main():
 
     d = open(dsi, encoding="utf-8", errors="surrogateescape").read()
     p = open(pd, encoding="utf-8", errors="surrogateescape").read()
-    # 节点定义必须出现在 primary_display_init 之前
     nodes_at = p.find("static void s3pro_dbg_init_once")
     init_at = p.find("int primary_display_init(")
+    early_at = p.find("S3PRO_LCM_EARLY_SUSPEND")
+    stop_at = p.find("_cmdq_stop_trigger_loop();", early_at if early_at > 0 else 0)
     checks = {
         "寄存器 dump": "static void s3pro_dsi_regs" in d,
         "config 快照": 's3pro_dsi_regs("config")' in d,
@@ -232,26 +290,28 @@ def main():
         "stop 快照": 's3pro_dsi_regs("stop")' in d,
         "skip_stop 节点": "s3pro_skip_stop" in p,
         "reinit 节点": "s3pro_reinit_on_resume" in p,
+        "early_suspend 节点": "s3pro_lcm_suspend_early" in p,
         "节点定义在 init 之前": 0 <= nodes_at < init_at,
-        "init 里调用创建": "s3pro_dbg_init_once();" in p,
+        "sleep 提前到关 DSI 之前": 0 <= early_at < stop_at,
+        "原位置改为条件": "if (!s3pro_lcm_suspend_early)" in p,
         "suspend 打印": "S3PRO_DBG suspend" in p,
         "resume 打印": "S3PRO_DBG resume" in p,
     }
     print()
     bad = 0
     for k, v in checks.items():
-        print("    %-26s %s" % (k, "OK" if v else "失败!"))
+        print("    %-28s %s" % (k, "OK" if v else "失败!"))
         if not v:
             bad += 1
     for f in (dsi, pd):
         c = open(f, encoding="utf-8", errors="surrogateescape").read()
         ok = c.count("{") == c.count("}")
-        print("    %-26s %s" % (os.path.basename(f) + " 花括号", "OK" if ok else "失败!"))
+        print("    %-28s %s" % (os.path.basename(f) + " 花括号", "OK" if ok else "失败!"))
         if not ok:
             bad += 1
     if bad:
         return 1
-    print("\n显示诊断插桩 v5 完成（节点开机即建）")
+    print("\n显示修复 v6 完成（susp sleep 提前 + 诊断 + 3 个运行时开关）")
     return 0
 
 
