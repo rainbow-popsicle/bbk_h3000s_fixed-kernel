@@ -540,6 +540,22 @@ else
 fi
 
 
+# ★ 触摸修复：GT911 分辨率 800x1280 → 1536x2048 + 校准矩阵改恒等变换。
+#   实机证据（getevent）：
+#     ABS_MT_POSITION_X = 739    正常
+#     ABS_MT_POSITION_Y = -466   负数 → Android 直接丢弃 → "触摸完全没反应"
+#   根因：
+#     1) GT911 配置里 X_MAX=800, Y_MAX=1280（小米平板3 的屏，不是这台）
+#     2) 校准矩阵 {0,2559,0, -6557,0,5238784} = 800x1280 屏的 90° 旋转，
+#        x 超过 799 后 y' 变负
+if [ "${TOUCH_FIX:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_gt911_touch.py" ]; then
+    echo "--- 修正 GT911 触摸参数（分辨率 + 校准矩阵）---"
+    "$PY" "$ROOT/scripts/patch_gt911_touch.py" . || die "触摸参数修正失败"
+else
+    echo "跳过触摸修正（TOUCH_FIX=${TOUCH_FIX:-1}）"
+fi
+
+
 # ★ 电量显示 0%：本树 drivers/power/mt81xx/Makefile 漏了 mt6397_fgadc.o，
 #   导致 bm_ctrl_cmd() 没有真实实现，只能用 build.sh 注入的弱占位（永远返回 0）。
 #   而 battery_meter_get_battery_voltage() 里 `int val = 5;` 只是采样次数占位，
