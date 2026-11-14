@@ -1,25 +1,28 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""显示诊断插桩 v3：状态机时机 + DSI 寄存器快照 + 运行时开关。
+"""显示诊断插桩 v4：状态机时机 + DSI 寄存器快照 + 两个运行时实验节点。
 
-已确认的事实（实机 dmesg / 内核二进制验证）：
+已确认的事实（实机 dmesg / 寄存器快照 / 内核二进制验证）：
   * 开机时 primary_display_resume 因 state==DISP_ALIVE 直接返回，
     lcm_resume 从未被调用；开机画面依赖 bootloader 初始化好的面板。
-  * 熄屏时我们的 lcm_suspend 真的断电，唤醒时 lcm_resume 第一次真正
-    初始化面板 → 黑屏（只有背光）。
-  * 面板初始化表已换成原厂 109 项完整表（内核二进制已验证），仍然黑屏。
-  * 唤醒后面板 GPIO(985/987/1016) 全高、mipitx=2、dsiclk=2、DSI 不 busy，
+  * 面板初始化表已换成原厂 109 项完整表（二进制已验证在里面），仍然黑屏。
+  * 唤醒后面板 GPIO 全高、mipitx=2、dsiclk=2、DSI 不 busy，
     SurfaceFlinger 正常出图 —— 硬件状态全对，就是没有画面。
+  * 寄存器逐字段对比，唯一差异：
+        DSI_START: 开机 0x00000001 → 唤醒 0x00000000
+        VFP      : 开机 0x28(40)   → 唤醒 0x0E(14)
+    其余（COM_CTRL / MODE_CTRL / PHY_LCCON / 全部 timing）完全一致。
 
-本补丁加三样东西（都不改变默认行为）：
-  1) primary_display suspend/resume 的时机与状态机迁移打印
+本补丁提供（默认都不改变行为）：
+  1) suspend/resume 时机与状态机迁移打印
   2) ddp_dsi_config / start / stop 结束时的 DSI 寄存器快照
-     → 对比"开机时能显示"与"唤醒后黑屏"两种状态的寄存器差异
-  3) 运行时开关 /sys/kernel/debug/s3pro_skip_stop
-     写 1 → 熄屏时跳过整段显示拆除（= 作者内核的行为）
-           唤醒时 primary_display_resume 会因 state 仍是 ALIVE 而直接返回，
-           从而验证"不拆管线屏幕就能回来"这个假设，且全程不用重新编译。
-     写 0 → 恢复默认（完整拆除）
+  3) /sys/kernel/debug/s3pro_skip_stop      （u32，写 1/0）
+       写 1 → 熄屏时跳过整段显示拆除（等同作者内核），唤醒时 resume 直接返回
+  4) /sys/kernel/debug/s3pro_reinit_on_resume （u32，写 1/0）
+       写 1 后，下次唤醒会在"路径启动完成之后"再推一次面板初始化表。
+       用于区分两种假说：
+         A) 视频流没起来（DSI_START=0）→ 由 patch_dsi_start.py 修
+         B) 初始化表在 DSI 停止状态下推送无效 → 这个节点能验证
 
 用法：
     python patch_disp_debug.py <内核树根> [--dry-run]
@@ -104,18 +107,30 @@ LCM_RESUME_BLOCK_NEW = (
 
 SUSPEND_ANCHOR = "int primary_display_suspend(void)\n{\n"
 
-SUSPEND_NEW = '''/* S3PRO_DBG: 运行时开关 —— 往 /sys/kernel/debug/s3pro_skip_stop 写 1
- * 会让熄屏时跳过整段显示拆除（等同作者内核的行为：DSI 保持运行），
- * 这样唤醒时 primary_display_resume 因 state 仍是 ALIVE 而直接返回，
- * 用于验证"不拆管线屏幕就能回来"的假设 —— 全程不需要重新编译。 */
+SUSPEND_NEW = '''/* S3PRO_DBG: 两个运行时实验节点（都是普通 u32，默认 0 = 不改变行为）
+ *
+ * /sys/kernel/debug/s3pro_skip_stop
+ *     写 1 → 熄屏时跳过整段显示拆除（等同作者内核：DSI 保持运行），
+ *            唤醒时 resume 会因 state 仍是 ALIVE 而直接返回。
+ *     写 0 → 恢复默认（完整拆除）。
+ *
+ * /sys/kernel/debug/s3pro_reinit_on_resume
+ *     写 1 后，下次唤醒会在"路径启动完成之后"再推一次面板初始化表，
+ *     用来验证"表在 DSI 停止状态下推送无效"这个假说。
+ */
 static u32 s3pro_skip_stop;
+static u32 s3pro_reinit_on_resume;
 static struct dentry *s3pro_skip_dent;
+static struct dentry *s3pro_reinit_dent;
 
 static void s3pro_dbg_init_once(void)
 {
 	if (s3pro_skip_dent == NULL)
 		s3pro_skip_dent = debugfs_create_u32("s3pro_skip_stop", 0644,
 						     NULL, &s3pro_skip_stop);
+	if (s3pro_reinit_dent == NULL)
+		s3pro_reinit_dent = debugfs_create_u32("s3pro_reinit_on_resume", 0644,
+						       NULL, &s3pro_reinit_on_resume);
 }
 
 int primary_display_suspend(void)
@@ -145,7 +160,12 @@ PD_PATCHES = [
     (LCM_RESUME_BLOCK, LCM_RESUME_BLOCK_NEW),
     ('DISPCHECK("[POWER]dpmgr path start[end]\\n");',
      'DISPCHECK("[POWER]dpmgr path start[end]\\n");\n'
-     '\tDISPMSG("S3PRO_DBG resume: path started, state=%d\\n", pgc->state);'),
+     '\tDISPMSG("S3PRO_DBG resume: path started, state=%d\\n", pgc->state);\n'
+     '\tif (s3pro_reinit_on_resume) {\n'
+     '\t\tDISPMSG("S3PRO_DBG resume: RE-PUSH table after start\\n");\n'
+     '\t\tdisp_lcm_resume(pgc->plcm);\n'
+     '\t\tDISPMSG("S3PRO_DBG resume: re-push done\\n");\n'
+     '\t}'),
 ]
 
 DSI_PATCHES = [
@@ -157,7 +177,7 @@ DSI_PATCHES = [
 
 
 def patch_file(path, patches, dry, label):
-    """逐条应用；已经插过的（new 文本已存在）跳过，便于本地重复测试。"""
+    """逐条应用；已经插过的跳过，便于重复运行与本地测试。"""
     if not os.path.exists(path):
         return ["找不到文件: %s" % path]
     t = open(path, encoding="utf-8", errors="surrogateescape").read()
@@ -166,7 +186,6 @@ def patch_file(path, patches, dry, label):
     for old, new in patches:
         if new in t:
             continue
-        # 已经插过但形式略有差异（例如带了标记）也跳过
         if "S3PRO" in new and "S3PRO" in t and old not in t:
             continue
         cnt = t.count(old)
@@ -208,11 +227,12 @@ def main():
     d = open(dsi, encoding="utf-8", errors="surrogateescape").read()
     p = open(pd, encoding="utf-8", errors="surrogateescape").read()
     checks = {
-        "寄存器 dump 函数": "static void s3pro_dsi_regs" in d,
-        "config 调用": 's3pro_dsi_regs("config")' in d,
-        "start 调用": 's3pro_dsi_regs("start")' in d,
-        "stop 调用": 's3pro_dsi_regs("stop")' in d,
-        "运行时开关": "s3pro_skip_stop" in p,
+        "寄存器 dump": "static void s3pro_dsi_regs" in d,
+        "config 快照": 's3pro_dsi_regs("config")' in d,
+        "start 快照": 's3pro_dsi_regs("start")' in d,
+        "stop 快照": 's3pro_dsi_regs("stop")' in d,
+        "skip_stop 节点": "s3pro_skip_stop" in p,
+        "reinit 节点": "s3pro_reinit_on_resume" in p,
         "debugfs 头文件": "#include <linux/debugfs.h>" in p,
         "suspend 打印": "S3PRO_DBG suspend" in p,
         "resume 打印": "S3PRO_DBG resume" in p,
@@ -231,7 +251,7 @@ def main():
             bad += 1
     if bad:
         return 1
-    print("\n显示诊断插桩 v3 完成（含运行时开关）")
+    print("\n显示诊断插桩 v4 完成（skip_stop + reinit_on_resume 两个 u32 节点）")
     return 0
 
 

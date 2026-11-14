@@ -524,6 +524,23 @@ else
 fi
 
 
+# ★ 修复 ddp_dsi_start 缺少 DSI_Start() 的问题（熄屏唤醒后黑屏的直接原因）。
+#   实机寄存器证据（同一内核、同一设备）：
+#     开机正常:  DSI_START = 0x00000001
+#     唤醒黑屏:  DSI_START = 0x00000000
+#     其余寄存器（COM_CTRL/MODE_CTRL/PHY_LCCON/全部 timing）两边完全一致
+#   原因：ddp_dsi_start 只把 DSI_START 清零，从不置 1；
+#        开机时该位是 bootloader 留下的 1，且开机路径不调用 ddp_dsi_start，
+#        只有熄屏→唤醒才第一次真正执行 stop→start。
+#   注意：这段必须在"显示诊断打印"之前执行，这样寄存器快照打在 DSI_Start 之后。
+if [ "${DSI_START_FIX:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_dsi_start.py" ]; then
+    echo "--- 修复 ddp_dsi_start 缺失的 DSI_Start() ---"
+    "$PY" "$ROOT/scripts/patch_dsi_start.py" . || die "DSI_Start 修复失败"
+else
+    echo "跳过 DSI_Start 修复（DSI_START_FIX=${DSI_START_FIX:-1}）"
+fi
+
+
 # ★ 显示诊断打印（研究"熄屏唤醒后黑屏"用，默认开启）
 #   目的：在 ddp_dsi_start / ddp_dsi_stop 结束时打印硬件状态：
 #     mipitx  : MIPI TX PLL 是否使能
