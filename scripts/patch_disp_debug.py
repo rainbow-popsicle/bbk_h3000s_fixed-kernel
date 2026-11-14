@@ -1,28 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""显示诊断插桩 v4：状态机时机 + DSI 寄存器快照 + 两个运行时实验节点。
+"""显示诊断插桩 v5：节点开机即建 + 运行时实验开关 + 寄存器快照。
 
-已确认的事实（实机 dmesg / 寄存器快照 / 内核二进制验证）：
-  * 开机时 primary_display_resume 因 state==DISP_ALIVE 直接返回，
-    lcm_resume 从未被调用；开机画面依赖 bootloader 初始化好的面板。
-  * 面板初始化表已换成原厂 109 项完整表（二进制已验证在里面），仍然黑屏。
-  * 唤醒后面板 GPIO 全高、mipitx=2、dsiclk=2、DSI 不 busy，
-    SurfaceFlinger 正常出图 —— 硬件状态全对，就是没有画面。
-  * 寄存器逐字段对比，唯一差异：
-        DSI_START: 开机 0x00000001 → 唤醒 0x00000000
-        VFP      : 开机 0x28(40)   → 唤醒 0x0E(14)
-    其余（COM_CTRL / MODE_CTRL / PHY_LCCON / 全部 timing）完全一致。
+实机已确认的事实链：
+  * 开机画面能显示：panel 由 bootloader 初始化，开机路径不调用 ddp_dsi_start。
+  * 第一次熄屏：primary_display_suspend 完整拆除（stop + 断电 + 面板 sleep-in）。
+  * 唤醒：lcm_resume 重推 109 项原厂表 → 仍然黑屏（只有背光）。
+  * 寄存器对比唯一差异 DSI_START（开机 1 / 唤醒 0），已在 patch_dsi_start.py 修复；
+    修复后实测唤醒 DSI_START=1，但屏幕**仍然黑**。
+  * 在视频流已启动后重推一次初始化表（reinit_on_resume=1）——仍然黑。
+  * skip_stop=1（不拆管线）——仍然黑，但这是**无效实验**：该节点原本是在
+    primary_display_suspend 里创建的，第一次熄屏时标志必然还是 0，
+    面板已经被拆过一次，之后再设 1 只是"防止二次拆卸"，救不回来。
 
-本补丁提供（默认都不改变行为）：
-  1) suspend/resume 时机与状态机迁移打印
-  2) ddp_dsi_config / start / stop 结束时的 DSI 寄存器快照
-  3) /sys/kernel/debug/s3pro_skip_stop      （u32，写 1/0）
-       写 1 → 熄屏时跳过整段显示拆除（等同作者内核），唤醒时 resume 直接返回
-  4) /sys/kernel/debug/s3pro_reinit_on_resume （u32，写 1/0）
-       写 1 后，下次唤醒会在"路径启动完成之后"再推一次面板初始化表。
-       用于区分两种假说：
-         A) 视频流没起来（DSI_START=0）→ 由 patch_dsi_start.py 修
-         B) 初始化表在 DSI 停止状态下推送无效 → 这个节点能验证
+本补丁 v5 的关键改动：
+  把两个 debugfs 节点提前到 **primary_display_init** 阶段创建，
+  这样开机后（面板还处于 bootloader 初始化好的正常状态、还没熄过屏）
+  就能先把 skip_stop=1 写进去，再做"完全不拆管线"的干净实验。
+
+节点：
+  /sys/kernel/debug/s3pro_skip_stop          写 1 → 熄屏时不拆显示管线
+  /sys/kernel/debug/s3pro_reinit_on_resume   写 1 → 唤醒后在 start 之后重推表
 
 用法：
     python patch_disp_debug.py <内核树根> [--dry-run]
@@ -56,6 +54,32 @@ static void s3pro_dsi_regs(const char *tag)
 			INREG32(&DSI_REG[i]->DSI_VM_CMD_CON),
 			INREG32(&DSI_REG[i]->DSI_STATE_DBG0), INREG32(&DSI_REG[i]->DSI_STATE_DBG1));
 	}
+}
+
+'''
+
+# 节点定义（放在文件靠前位置，保证 primary_display_init 能用）
+NODES_FUNC = '''/* S3PRO_DBG: 运行时实验节点（普通 u32，默认 0 = 不改变行为）
+ *
+ * s3pro_skip_stop         写 1 → 熄屏时不拆显示管线（等同作者内核）
+ * s3pro_reinit_on_resume  写 1 → 唤醒后在 dsi_start 之后重推面板初始化表
+ *
+ * 注意：本函数在 primary_display_init 里就会被调用一次，
+ * 因此开机后立即可写这两个节点，不必等第一次熄屏。
+ */
+static u32 s3pro_skip_stop;
+static u32 s3pro_reinit_on_resume;
+static struct dentry *s3pro_skip_dent;
+static struct dentry *s3pro_reinit_dent;
+
+static void s3pro_dbg_init_once(void)
+{
+	if (s3pro_skip_dent == NULL)
+		s3pro_skip_dent = debugfs_create_u32("s3pro_skip_stop", 0644,
+						     NULL, &s3pro_skip_stop);
+	if (s3pro_reinit_dent == NULL)
+		s3pro_reinit_dent = debugfs_create_u32("s3pro_reinit_on_resume", 0644,
+						       NULL, &s3pro_reinit_on_resume);
 }
 
 '''
@@ -105,41 +129,12 @@ LCM_RESUME_BLOCK_NEW = (
     '	DISPCHECK("[POWER]lcm resume[end]\\n");'
 )
 
-SUSPEND_ANCHOR = "int primary_display_suspend(void)\n{\n"
-
-SUSPEND_NEW = '''/* S3PRO_DBG: 两个运行时实验节点（都是普通 u32，默认 0 = 不改变行为）
- *
- * /sys/kernel/debug/s3pro_skip_stop
- *     写 1 → 熄屏时跳过整段显示拆除（等同作者内核：DSI 保持运行），
- *            唤醒时 resume 会因 state 仍是 ALIVE 而直接返回。
- *     写 0 → 恢复默认（完整拆除）。
- *
- * /sys/kernel/debug/s3pro_reinit_on_resume
- *     写 1 后，下次唤醒会在"路径启动完成之后"再推一次面板初始化表，
- *     用来验证"表在 DSI 停止状态下推送无效"这个假说。
- */
-static u32 s3pro_skip_stop;
-static u32 s3pro_reinit_on_resume;
-static struct dentry *s3pro_skip_dent;
-static struct dentry *s3pro_reinit_dent;
-
-static void s3pro_dbg_init_once(void)
-{
-	if (s3pro_skip_dent == NULL)
-		s3pro_skip_dent = debugfs_create_u32("s3pro_skip_stop", 0644,
-						     NULL, &s3pro_skip_stop);
-	if (s3pro_reinit_dent == NULL)
-		s3pro_reinit_dent = debugfs_create_u32("s3pro_reinit_on_resume", 0644,
-						       NULL, &s3pro_reinit_on_resume);
-}
-
-int primary_display_suspend(void)
-{
-'''
+INIT_ANCHOR = "	pregulator = dev;\n	dprec_init();"
+INIT_NEW = "	pregulator = dev;\n	dprec_init();\n	s3pro_dbg_init_once();\n" \
+           '	DISPMSG("S3PRO_DBG init: debug nodes ready (skip_stop / reinit_on_resume)\n");'
 
 SUSPEND_SKIP_ANCHOR = "	MMProfileLogEx(ddp_mmp_get_events()->primary_suspend, MMProfileFlagStart, 0, 0);"
-SUSPEND_SKIP_NEW = ('''	s3pro_dbg_init_once();
-	if (s3pro_skip_stop) {
+SUSPEND_SKIP_NEW = ('''	if (s3pro_skip_stop) {
 		DISPMSG("S3PRO_DBG suspend: SKIP teardown (skip_stop=1)\\n");
 		return DISP_STATUS_OK;
 	}
@@ -148,7 +143,9 @@ SUSPEND_SKIP_NEW = ('''	s3pro_dbg_init_once();
 PD_PATCHES = [
     ('#include "disp_drv_log.h"',
      '#include "disp_drv_log.h"\n#include <linux/debugfs.h>'),
-    (SUSPEND_ANCHOR, SUSPEND_NEW),
+    ('#include <linux/debugfs.h>',
+     '#include <linux/debugfs.h>\n\n' + NODES_FUNC),
+    (INIT_ANCHOR, INIT_NEW),
     (SUSPEND_SKIP_ANCHOR, SUSPEND_SKIP_NEW),
     ('DISPCHECK("[POWER]lcm suspend[begin]\\n");\n\tdisp_lcm_suspend(pgc->plcm);',
      'DISPCHECK("[POWER]lcm suspend[begin]\\n");\n'
@@ -177,7 +174,6 @@ DSI_PATCHES = [
 
 
 def patch_file(path, patches, dry, label):
-    """逐条应用；已经插过的跳过，便于重复运行与本地测试。"""
     if not os.path.exists(path):
         return ["找不到文件: %s" % path]
     t = open(path, encoding="utf-8", errors="surrogateescape").read()
@@ -226,6 +222,9 @@ def main():
 
     d = open(dsi, encoding="utf-8", errors="surrogateescape").read()
     p = open(pd, encoding="utf-8", errors="surrogateescape").read()
+    # 节点定义必须出现在 primary_display_init 之前
+    nodes_at = p.find("static void s3pro_dbg_init_once")
+    init_at = p.find("int primary_display_init(")
     checks = {
         "寄存器 dump": "static void s3pro_dsi_regs" in d,
         "config 快照": 's3pro_dsi_regs("config")' in d,
@@ -233,25 +232,26 @@ def main():
         "stop 快照": 's3pro_dsi_regs("stop")' in d,
         "skip_stop 节点": "s3pro_skip_stop" in p,
         "reinit 节点": "s3pro_reinit_on_resume" in p,
-        "debugfs 头文件": "#include <linux/debugfs.h>" in p,
+        "节点定义在 init 之前": 0 <= nodes_at < init_at,
+        "init 里调用创建": "s3pro_dbg_init_once();" in p,
         "suspend 打印": "S3PRO_DBG suspend" in p,
         "resume 打印": "S3PRO_DBG resume" in p,
     }
     print()
     bad = 0
     for k, v in checks.items():
-        print("    %-24s %s" % (k, "OK" if v else "失败!"))
+        print("    %-26s %s" % (k, "OK" if v else "失败!"))
         if not v:
             bad += 1
     for f in (dsi, pd):
         c = open(f, encoding="utf-8", errors="surrogateescape").read()
         ok = c.count("{") == c.count("}")
-        print("    %-24s %s" % (os.path.basename(f) + " 花括号", "OK" if ok else "失败!"))
+        print("    %-26s %s" % (os.path.basename(f) + " 花括号", "OK" if ok else "失败!"))
         if not ok:
             bad += 1
     if bad:
         return 1
-    print("\n显示诊断插桩 v4 完成（skip_stop + reinit_on_resume 两个 u32 节点）")
+    print("\n显示诊断插桩 v5 完成（节点开机即建）")
     return 0
 
 
