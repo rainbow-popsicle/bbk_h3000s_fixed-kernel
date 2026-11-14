@@ -336,7 +336,7 @@ def main():
     early_at = p.find("S3PRO_LCM_EARLY_SUSPEND")
     stop_at = p.find("_cmdq_stop_trigger_loop();", early_at if early_at > 0 else 0)
     checks = {
-        "寄存器 dump": "static void s3pro_dsi_regs" in d,
+        "寄存器 dump": "void s3pro_dsi_regs(const char *tag)" in d,
         "config 快照": 's3pro_dsi_regs("config")' in d,
         "start 快照": 's3pro_dsi_regs("start")' in d,
         "stop 快照": 's3pro_dsi_regs("stop")' in d,
