@@ -573,6 +573,22 @@ else
 fi
 
 
+# ★ 面板驱动诊断：**只做 DCS 回读，不改任何时序**。
+#   build-50 已确认：休眠命令提前到关 DSI 之前、DSI_START=1、GPIO 全高、
+#   帧在流动，但屏幕仍然全黑；而 skip_stop=1（完全不拆）时屏幕正常。
+#   → 面板硬件、DSI 通路、视频流都没问题，病灶在"断电后重建"这条链。
+#   本步只加测量，不做任何猜测性改动：
+#     推表后回读 0x0A（power mode，正常 0x9C）、0xDA/0xDB（面板 ID）
+#     读回有效 → 面板活着、上电复位正常 → 病灶在视频流参数（去 LK 对比 DSI 配置）
+#     读回全 0 → 面板没被正确上电/复位 → 再研究电源/复位时序
+if [ "${LCM_DEBUG:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_lcm_debug.py" ]; then
+    echo "--- 面板驱动诊断（DCS 回读，纯测量）---"
+    "$PY" "$ROOT/scripts/patch_lcm_debug.py" . || die "面板 DCS 回读补丁失败"
+else
+    echo "跳过面板驱动诊断（LCM_DEBUG=${LCM_DEBUG:-1}）"
+fi
+
+
 # ★ 电量显示 0%：本树 drivers/power/mt81xx/Makefile 漏了 mt6397_fgadc.o，
 #   导致 bm_ctrl_cmd() 没有真实实现，只能用 build.sh 注入的弱占位（永远返回 0）。
 #   而 battery_meter_get_battery_voltage() 里 `int val = 5;` 只是采样次数占位，
