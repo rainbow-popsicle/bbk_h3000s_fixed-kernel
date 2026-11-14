@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""显示诊断插桩 v2：状态机时机 + DSI 寄存器快照。
+"""显示诊断插桩 v3：状态机时机 + DSI 寄存器快照 + 运行时开关。
 
 已确认的事实（实机 dmesg / 内核二进制验证）：
   * 开机时 primary_display_resume 因 state==DISP_ALIVE 直接返回，
@@ -11,10 +11,15 @@
   * 唤醒后面板 GPIO(985/987/1016) 全高、mipitx=2、dsiclk=2、DSI 不 busy，
     SurfaceFlinger 正常出图 —— 硬件状态全对，就是没有画面。
 
-本补丁加打印（不改逻辑）：
-  1) primary_display suspend/resume 的时机与状态机迁移
+本补丁加三样东西（都不改变默认行为）：
+  1) primary_display suspend/resume 的时机与状态机迁移打印
   2) ddp_dsi_config / start / stop 结束时的 DSI 寄存器快照
      → 对比"开机时能显示"与"唤醒后黑屏"两种状态的寄存器差异
+  3) 运行时开关 /sys/kernel/debug/s3pro_skip_stop
+     写 1 → 熄屏时跳过整段显示拆除（= 作者内核的行为）
+           唤醒时 primary_display_resume 会因 state 仍是 ALIVE 而直接返回，
+           从而验证"不拆管线屏幕就能回来"这个假设，且全程不用重新编译。
+     写 0 → 恢复默认（完整拆除）
 
 用法：
     python patch_disp_debug.py <内核树根> [--dry-run]
@@ -97,7 +102,39 @@ LCM_RESUME_BLOCK_NEW = (
     '	DISPCHECK("[POWER]lcm resume[end]\\n");'
 )
 
+SUSPEND_ANCHOR = "int primary_display_suspend(void)\n{\n"
+
+SUSPEND_NEW = '''/* S3PRO_DBG: 运行时开关 —— 往 /sys/kernel/debug/s3pro_skip_stop 写 1
+ * 会让熄屏时跳过整段显示拆除（等同作者内核的行为：DSI 保持运行），
+ * 这样唤醒时 primary_display_resume 因 state 仍是 ALIVE 而直接返回，
+ * 用于验证"不拆管线屏幕就能回来"的假设 —— 全程不需要重新编译。 */
+static u32 s3pro_skip_stop;
+static struct dentry *s3pro_skip_dent;
+
+static void s3pro_dbg_init_once(void)
+{
+	if (s3pro_skip_dent == NULL)
+		s3pro_skip_dent = debugfs_create_u32("s3pro_skip_stop", 0644,
+						     NULL, &s3pro_skip_stop);
+}
+
+int primary_display_suspend(void)
+{
+'''
+
+SUSPEND_SKIP_ANCHOR = "	MMProfileLogEx(ddp_mmp_get_events()->primary_suspend, MMProfileFlagStart, 0, 0);"
+SUSPEND_SKIP_NEW = ('''	s3pro_dbg_init_once();
+	if (s3pro_skip_stop) {
+		DISPMSG("S3PRO_DBG suspend: SKIP teardown (skip_stop=1)\\n");
+		return DISP_STATUS_OK;
+	}
+''' + SUSPEND_SKIP_ANCHOR)
+
 PD_PATCHES = [
+    ('#include "disp_drv_log.h"',
+     '#include "disp_drv_log.h"\n#include <linux/debugfs.h>'),
+    (SUSPEND_ANCHOR, SUSPEND_NEW),
+    (SUSPEND_SKIP_ANCHOR, SUSPEND_SKIP_NEW),
     ('DISPCHECK("[POWER]lcm suspend[begin]\\n");\n\tdisp_lcm_suspend(pgc->plcm);',
      'DISPCHECK("[POWER]lcm suspend[begin]\\n");\n'
      '\tDISPMSG("S3PRO_DBG suspend: call lcm_suspend, state=%d\\n", pgc->state);\n'
@@ -120,23 +157,28 @@ DSI_PATCHES = [
 
 
 def patch_file(path, patches, dry, label):
+    """逐条应用；已经插过的（new 文本已存在）跳过，便于本地重复测试。"""
     if not os.path.exists(path):
         return ["找不到文件: %s" % path]
     t = open(path, encoding="utf-8", errors="surrogateescape").read()
-    if MARK in t:
-        print("  %s: 已打过补丁，跳过" % label)
-        return []
     problems = []
+    applied = 0
     for old, new in patches:
+        if new in t:
+            continue
+        # 已经插过但形式略有差异（例如带了标记）也跳过
+        if "S3PRO" in new and "S3PRO" in t and old not in t:
+            continue
         cnt = t.count(old)
         if cnt != 1:
             problems.append("%s: 锚点匹配 %d 次（应为 1）: %r" % (label, cnt, old[:60]))
             continue
         t = t.replace(old, new, 1)
+        applied += 1
     if problems:
         return problems
-    print("  %s: 已插入 %d 处" % (label, len(patches)))
-    if not dry:
+    print("  %s: 新插入 %d 处" % (label, applied))
+    if applied and not dry:
         open(path, "w", encoding="utf-8", errors="surrogateescape", newline="").write(t)
     return []
 
@@ -170,6 +212,8 @@ def main():
         "config 调用": 's3pro_dsi_regs("config")' in d,
         "start 调用": 's3pro_dsi_regs("start")' in d,
         "stop 调用": 's3pro_dsi_regs("stop")' in d,
+        "运行时开关": "s3pro_skip_stop" in p,
+        "debugfs 头文件": "#include <linux/debugfs.h>" in p,
         "suspend 打印": "S3PRO_DBG suspend" in p,
         "resume 打印": "S3PRO_DBG resume" in p,
     }
@@ -187,7 +231,7 @@ def main():
             bad += 1
     if bad:
         return 1
-    print("\n显示诊断插桩 v2 完成")
+    print("\n显示诊断插桩 v3 完成（含运行时开关）")
     return 0
 
 
