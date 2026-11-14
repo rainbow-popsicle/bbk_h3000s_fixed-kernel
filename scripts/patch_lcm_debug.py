@@ -28,14 +28,45 @@ MARK = "S3PRO_LCM_RDBACK"
 
 
 def find_driver(tree):
+    """按 .config 里的 CONFIG_CUSTOM_KERNEL_LCM 精确定位面板驱动。
+
+    不能靠"谁先匹配谁就中"——树里有多个面板驱动都有 lcm_initialization_setting
+    和 lcm_resume（例如 hx8392a_dsi_cmd），上次就是因为这个选错了文件。
+    """
     base = os.path.join(tree, "drivers", "misc", "mediatek", "lcm")
+    name = None
+    cfg = os.path.join(tree, ".config")
+    if os.path.exists(cfg):
+        for line in open(cfg, encoding="utf-8", errors="replace"):
+            if line.startswith("CONFIG_CUSTOM_KERNEL_LCM="):
+                name = line.split("=", 1)[1].strip().strip('"')
+                break
+    if name:
+        d = os.path.join(base, name)
+        if os.path.isdir(d):
+            for f in os.listdir(d):
+                if f.endswith(".c"):
+                    p = os.path.join(d, f)
+                    t = open(p, encoding="utf-8", errors="replace").read()
+                    if "lcm_initialization_setting[]" in t:
+                        return p
+    # 兜底：优先 nt35523（本机面板），再退回扫描
+    for root, _d, files in os.walk(base):
+        if "nt35523" not in root:
+            continue
+        for f in files:
+            if f.endswith(".c"):
+                p = os.path.join(root, f)
+                t = open(p, encoding="utf-8", errors="replace").read()
+                if "lcm_initialization_setting[]" in t:
+                    return p
     for root, _d, files in os.walk(base):
         for f in files:
             if not f.endswith(".c"):
                 continue
             p = os.path.join(root, f)
             t = open(p, encoding="utf-8", errors="replace").read()
-            if "lcm_initialization_setting[]" in t and "static void lcm_resume(void)" in t:
+            if "nt35523" in t and "lcm_initialization_setting[]" in t:
                 return p
     return None
 
