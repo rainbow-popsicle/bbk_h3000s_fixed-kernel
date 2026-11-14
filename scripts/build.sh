@@ -487,6 +487,24 @@ else
     echo "跳过面板初始化时序补丁（LCM_INIT_PATCH=${LCM_INIT_PATCH:-0}）—— 保持能显示的 v1 行为"
 fi
 
+# ★ 关掉面板 ESD 自检。
+#   实机证据（v1 版：画面正常，但约 72 秒后黑屏、背光仍亮，之后按电源键也无法恢复）：
+#     [72.4s] 起 CMDQ 错误块 ×37
+#     display_esd_che 相关日志 ×2308、primary_display_esd_recovery ×5
+#     DSI0 / DSI1 最终都 idle（显示引擎停转），背光仍是 102
+#   机制：ESD 线程每 2 秒读面板寄存器（cmd 0x0A/期望 0x9C），读超时即判定面板异常，
+#         触发 ddp_dsi_stop → DSI_Reset → lcm_init，反复把显示引擎停下，画面再也回不来。
+#   作者内核全程 0 次 esd_recovery。
+#   本补丁【只关 ESD】，不动 lcm_init/lcm_resume 的时序（那是 v2 的改动，默认关闭）。
+if [ "${LCM_ESD_OFF:-1}" = "1" ] && [ "${LCMPATCH:-1}" = "1" ] \
+   && [ -f "$ROOT/scripts/patch_lcm_esd_off.py" ]; then
+    echo "--- 关闭面板 ESD 自检（切断 recovery 死循环）---"
+    "$PY" "$ROOT/scripts/patch_lcm_esd_off.py" . || die "关闭 ESD 失败"
+else
+    echo "跳过 ESD 关闭（LCM_ESD_OFF=${LCM_ESD_OFF:-1}）"
+fi
+
+
 # ★ 电量显示 0%：本树 drivers/power/mt81xx/Makefile 漏了 mt6397_fgadc.o，
 #   导致 bm_ctrl_cmd() 没有真实实现，只能用 build.sh 注入的弱占位（永远返回 0）。
 #   而 battery_meter_get_battery_voltage() 里 `int val = 5;` 只是采样次数占位，
