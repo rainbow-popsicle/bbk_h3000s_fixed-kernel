@@ -127,6 +127,133 @@ def patch_text(src):
     if n_temp == 0:
         changes.append("温度函数未找到")
 
+    # ---- 2.5) fgauge_read_capacity_by_v：修掉"永远返回 100%" ----
+    #
+    # 这是 SOC 恒为 100% 的真正根因。
+    #
+    # mt_bm_data.c 里：
+    #     .temperature_t = 255,   /* This should be fixed, never change the value */
+    #     .p_battery_profile_temperature = default_battery_profile_temperature,
+    # 后者是一张【全 0 模板表】（75 个条目全是 {0,0}）。它本来就该是全 0 的，
+    # 因为运行时要靠 fgauge_construct_battery_profile() 按当前温度把它填成真实曲线。
+    #
+    # 同文件的 fgauge_get_dod0() 就是这么用的：
+    #     profile_p = fgauge_get_profile(p_bat_meter_data->temperature_t);
+    #     fgauge_construct_battery_profile(temperature, profile_p);   ← 先填充
+    #     ... 再按电压插值
+    #
+    # 但 fgauge_read_capacity_by_v() 【漏了填充这一步】，直接拿全 0 表用，
+    # 于是第一句
+    #     if (voltage > (profile_p + 0)->voltage)  return 100;
+    # 里 profile_p[0].voltage == 0，对任何真实电压都成立 → 恒定返回 100%。
+    #
+    # 修法：照 fgauge_get_dod0() 的做法，取完表后先按当前温度填充。
+    PROFILE_OLD = "\tprofile_p = fgauge_get_profile(p_bat_meter_data->temperature_t);"
+
+    def fix_profile(text):
+        idx = text.find("s32 fgauge_read_capacity_by_v(s32 voltage)")
+        if idx < 0:
+            return text, False
+        end = text.find("s32 fgauge_read_v_by_capacity", idx)
+        if end < 0:
+            return text, False
+        body = text[idx:end]
+        if "S3PRO: 补上" in body:
+            return text, False
+        if PROFILE_OLD not in body:
+            return text, False
+        new_body = body.replace(
+            PROFILE_OLD,
+            "\t/* S3PRO: 补上 fgauge_get_dod0() 里有的那张\"按温度填充曲线表\"的步骤。\n"
+            "\t * temperature_t(255) 指向的是全 0 模板表，不填充就会让本函数恒返回 100%。\n"
+            "\t * 注意这里只能用 force_get_tbat()（本行上方已定义），\n"
+            "\t * 不能用 battery_meter_get_battery_temperature()（定义在文件末尾，\n"
+            "\t * 提前调用会触发 -Werror=implicit-function-declaration）。 */\n"
+            "\tprofile_p = fgauge_get_profile(p_bat_meter_data->temperature_t);\n"
+            "\tif (profile_p != NULL)\n"
+            "\t\tfgauge_construct_battery_profile(force_get_tbat(), profile_p);",
+            1)
+        changes.append("fgauge_read_capacity_by_v(补上曲线表填充)")
+        return text[:idx] + new_body + text[end:], True
+
+    out, ok_prof = fix_profile(out)
+    if not ok_prof:
+        changes.append("fgauge_read_capacity_by_v 未匹配")
+
+    # ---- 2.6) 给 fgauge_construct_battery_profile 补前置声明 ----
+    #
+    # 它的定义在行 811 附近，而我们在行 615 就调用它了。
+    # 不加声明会触发 -Werror=implicit-function-declaration 编译失败。
+    # 插在 battery_meter_ctrl 那个函数指针声明之后（文件前部）。
+    DECL_ANCHOR = "static BATTERY_METER_CONTROL battery_meter_ctrl;"
+    DECL_LINE = (
+        "\n"
+        "/* S3PRO: fgauge_construct_battery_profile 定义在文件后半部分，\n"
+        " * 而 fgauge_read_capacity_by_v() 在前面就要调用它，这里补前置声明。 */\n"
+        "void fgauge_construct_battery_profile(s32 temperature,\n"
+        "\t\t\t\t      struct BATTERY_PROFILE_STRUCT *temp_profile_p);"
+    )
+
+    def add_decl(text):
+        if "S3PRO: fgauge_construct_battery_profile 定义在文件后半部分" in text:
+            return text, False
+        if DECL_ANCHOR not in text:
+            return text, False
+        return text.replace(DECL_ANCHOR,
+                            DECL_ANCHOR + DECL_LINE, 1), True
+
+    out, ok_decl = add_decl(out)
+    if ok_decl:
+        changes.append("fgauge_construct_battery_profile 前置声明")
+    else:
+        changes.append("前置声明未添加")
+
+    # ---- 3) battery_meter_initial：gFG_Is_Init 必须提前置位 ----
+    #
+    # 原顺序：
+    #     fgauge_initialization();
+    #     fgauge_algo_run_init();    ← 里面调 battery_meter_get_battery_voltage()，
+    #                                  该函数开头 `if (gFG_Is_Init == false) return 0;`
+    #                                  → 读到 0 → capacity_by_v(0) 被钳到 100
+    #     gFG_Is_Init = true;        ← 太晚了
+    # 后果：开机 dod_init() 里
+    #     if (abs(cap_by_v_init - cap_by_v) > 5) cap_by_v = cap_by_v_init;
+    # 用错误的 100 覆盖掉真值。实机日志：dod_init: 3903, 100, 100, 33
+    INIT_ANCHOR = "\tfgauge_initialization();"
+
+    def fix_init_flag(text):
+        idx = text.find("s32 battery_meter_initial(void)")
+        if idx < 0:
+            return text, False
+        end = text.find("s32 battery_meter_reset", idx)
+        if end < 0:
+            return text, False
+        body = text[idx:end]
+        if "S3PRO: 必须先置位" in body:
+            return text, False
+        if INIT_ANCHOR not in body:
+            return text, False
+
+        # 1) 删掉后面那句单独的 gFG_Is_Init = true;
+        body2 = body.replace("\n\tgFG_Is_Init = true;\n", "\n", 1)
+        if body2 == body:
+            return text, False
+
+        # 2) 在 fgauge_initialization() 前面插入置位语句
+        ins = (
+            "\t/* S3PRO: 必须先置位，否则 fgauge_algo_run_init() 里\n"
+            "\t * battery_meter_get_battery_voltage() 会因 gFG_Is_Init==false\n"
+            "\t * 直接返回 0，容量被 fgauge_read_capacity_by_v(0) 钳成 100%。 */\n"
+            "\tgFG_Is_Init = true;\n\n"
+        )
+        body2 = body2.replace(INIT_ANCHOR, ins + INIT_ANCHOR, 1)
+        changes.append("battery_meter_initial(Is_Init 顺序)")
+        return text[:idx] + body2 + text[end:], True
+
+    out, ok = fix_init_flag(out)
+    if not ok:
+        changes.append("battery_meter_initial 未匹配")
+
     return out, changes
 
 
@@ -148,13 +275,14 @@ def main():
         return
 
     new, changes = patch_text(src)
-    if len(changes) != 4 or "温度函数未找到" in changes:
+    bad = [x for x in changes if "未找到" in x or "未匹配" in x]
+    if len(changes) != 7 or bad:
         raise SystemExit(
-            "只匹配到 %d/4 处（%s），源码结构和预期不符，中止"
+            "只匹配到 %d/7 处（%s），源码结构和预期不符，中止"
             % (len(changes), ", ".join(changes)))
 
     if dry:
-        print("[dry] 会修改 4 处：%s" % ", ".join(changes))
+        print("[dry] 会修改 7 处：%s" % ", ".join(changes))
         return
 
     with open(path, "w", encoding="utf-8") as f:

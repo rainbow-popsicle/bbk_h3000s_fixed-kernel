@@ -685,6 +685,21 @@ if [ -f "$ROOT/scripts/patch_battery_soc.py" ]; then
 else
     warn "scripts/patch_battery_soc.py 不存在 —— 电量仍会恒为 0%"
 fi
+
+# ★ 传感器驱动没打开（自动亮度 / 自动旋转用不了）
+#   硬件确认方式：自写的静态 ARM 探测工具直接读 I2C 寄存器
+#     加速度计 /dev/i2c-6 @0x19, WHO_AM_I(0x0F) = 0x33  → LIS3DH
+#     光线距离 /dev/i2c-8 @0x1C, 0x80=0xEE 0x92=0xEE     → CM36686
+#   两处缺失性质不同：
+#     CM36686  → accelerometer/alsps 的 Makefile 里有引用，只是配置没开
+#     LIS3DH   → accelerometer/Makefile 里【完全没有】lis3dh/ 这一行，
+#                必须补一行，光开配置不生效
+if [ -f "$ROOT/scripts/patch_sensors.py" ]; then
+    echo "--- 打开传感器驱动（LIS3DH 加速度计 + CM36686 光感）---"
+    "$PY" "$ROOT/scripts/patch_sensors.py" . || warn "传感器补丁失败（不影响内核其它部分）"
+else
+    warn "scripts/patch_sensors.py 不存在 —— 自动亮度/自动旋转用不了"
+fi
 grep -E '^CONFIG_LOCALVERSION' .config || true
 
 # 把和上次链接失败相关的开关打出来，方便下一轮定位到底缺哪个提供者
