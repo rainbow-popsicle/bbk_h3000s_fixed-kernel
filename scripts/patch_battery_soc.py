@@ -46,42 +46,53 @@ def patch_text(src):
     out = src
     changes = []
 
-    # ---- 1) fgauge_initialization：初始电量按电压查 OCV 表 ----
+    # ---- 1) fgauge_initialization：初始电量按 OCV 曲线换算 ----
+    #
+    # 注意：不能用 fgauge_read_capacity()！它从第 1250 行的 #if 0 一直屏蔽到
+    # 第 1443 行（连同 fgauge_get_dod0 / fgauge_update_dod），源码里根本不参与
+    # 编译 —— 作者那行 /*gFG_capacity = fgauge_read_capacity(0);*/ 是死代码。
+    # 真正可用的是第 609 行的 fgauge_read_capacity_by_v()：按温度选 OCV 曲线表、
+    # 插值出 DOD 再取 100-DOD，返回 0~100 的百分比，而且 fgauge_algo_run()
+    # 里本来就在用它算 gFG_capacity_by_v（一直工作正常）。
     def fix_init(m):
         body = m.group(0)
         if CAR_CALL_INIT not in body:
             return body
         new = body.replace(
             CAR_CALL_INIT,
-            "\t/* S3PRO: GET_HW_FG_CAR 返回的是状态码(0)，电量要用 fgauge_read_capacity() 换算 */\n"
+            "\t/* S3PRO: GET_HW_FG_CAR 返回的是状态码(0)，电量按 OCV 曲线换算 */\n"
             "\t\t" + read_car_line() + "\n"
-            "\t\tgFG_capacity = fgauge_read_capacity(0);"
+            "\t\tgFG_capacity = fgauge_read_capacity_by_v(gFG_voltage);"
         )
         changes.append("fgauge_initialization")
         return new
 
     out = re.sub(r"void fgauge_initialization\(void\)\s*\{.*?\n\}", fix_init, out, flags=re.S)
 
-    # ---- 2) fgauge_algo_run / fgauge_algo_run_init：运行期按库仑计换算 ----
-    def make_fixer(fname, cap_type):
+    # ---- 2) fgauge_algo_run / fgauge_algo_run_init：复用已算好的电压法容量 ----
+    #
+    # 这两个函数里紧邻上面就有
+    #     gFG_capacity_by_v = fgauge_read_capacity_by_v(...);
+    # 所以直接把 gFG_capacity_by_c 指向它即可，不引入任何新依赖。
+    def make_fixer(fname):
         def fix(m):
             body = m.group(0)
             if CAR_CALL not in body:
                 return body
             new = body.replace(
                 CAR_CALL,
-                "\t/* S3PRO: 同上，改用 fgauge_read_capacity() 得到真正的百分比 */\n"
+                "\t/* S3PRO: 同理，直接用上面第 2 步已算好的电压法容量 */\n"
                 "\t\t" + read_car_line() + "\n"
-                "\t\tgFG_capacity_by_c = fgauge_read_capacity(%d);" % cap_type
+                "\t\tgFG_capacity_by_c = gFG_capacity_by_v;"
             )
             changes.append(fname)
             return new
         return fix
 
     out = re.sub(r"void fgauge_algo_run\(void\)\s*\{.*?\n\}",
-                 make_fixer("fgauge_algo_run", 1), out, flags=re.S)
+                 make_fixer("fgauge_algo_run"), out, flags=re.S)
     out = re.sub(r"void fgauge_algo_run_init\(void\)\s*\{.*?\n\}",
-                 make_fixer("fgauge_algo_run_init", 0), out, flags=re.S)
+                 make_fixer("fgauge_algo_run_init"), out, flags=re.S)
 
     # ---- 3) battery_meter_get_battery_temperature：改用 force_get_tbat() ----
     #
