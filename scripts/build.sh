@@ -623,11 +623,14 @@ fi
 #   本步：把 defconfig 里该开关打开 + 用原厂配置数组替换 + 补齐三个宏。
 if [ "${GTP_KEYS:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_gt911_keys.py" ]; then
     echo "--- 启用 GT911 实体触摸按键（原厂配置 + DTB 键值）---"
-    for df in arch/arm64/configs/h3000s_defconfig arch/arm64/configs/defconfig; do
-        if [ -f "$df" ]; then
-            sed -i 's/^# CONFIG_GTP_HAVE_TOUCH_KEY is not set/CONFIG_GTP_HAVE_TOUCH_KEY=y/' "$df"
-            echo "  defconfig: $df → $(grep -c '^CONFIG_GTP_HAVE_TOUCH_KEY=y' "$df" || true) 处已开启"
-        fi
+    # 注意：构建实际使用的是从原厂 boot.img 提取的 .config，
+    # 树里的 defconfig 根本不会被用（build.sh 第 4 步已确定 .config）。
+    # 只改 defconfig 是无效的 —— 上一版就是这么白跑的。
+    for df in arch/arm64/configs/h3000s_defconfig arch/arm64/configs/defconfig .config; do
+        [ -f "$df" ] || continue
+        sed -i 's/^# CONFIG_GTP_HAVE_TOUCH_KEY is not set/CONFIG_GTP_HAVE_TOUCH_KEY=y/' "$df"
+        grep -q '^CONFIG_GTP_HAVE_TOUCH_KEY=y' "$df" || echo 'CONFIG_GTP_HAVE_TOUCH_KEY=y' >> "$df"
+        echo "  $df → $(grep '^CONFIG_GTP_HAVE_TOUCH_KEY' "$df")"
     done
     "$PY" "$ROOT/scripts/patch_gt911_keys.py" . || die "触摸按键补丁失败"
 else
