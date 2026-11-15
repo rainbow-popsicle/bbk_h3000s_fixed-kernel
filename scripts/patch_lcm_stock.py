@@ -103,6 +103,19 @@ static void lcm_resume(void)
 	LCM_LOGI("%s exit\\n", __func__);
 }
 
+/* 旧初始化表/睡眠表仍留在文件里但不再被调用（改用原厂 s3pro_* 三张表）。
+ * 内核开了 -Werror=unused-variable，必须显式引用一次，否则编译失败。 */
+static void __attribute__((unused)) s3pro_keep_legacy_tables(void)
+{
+	(void)lcm_initialization_setting;
+	(void)lcm_deep_sleep_mode_in_setting;
+}
+
+/* 这两行原本在 lcm_set_disp_param 之前，被本补丁的替换区间吃掉了，必须补回：
+ * 少了 set_panel_disp_param 的声明会报 implicit declaration 错误。 */
+typedef void (*send_cmd)(struct LCM_setting_table *table, unsigned int count, unsigned char force_update);
+extern int set_panel_disp_param(unsigned int param, send_cmd p_func);
+
 static void lcm_set_disp_param(unsigned int param)
 {
 	int ret;
@@ -230,6 +243,10 @@ def main():
                         < c.find("GPIO_LCD_VSP_EN, GPIO_OUT_ONE);\n\tMDELAY(2);")),
         "suspend_power 已实现": "static void lcm_suspend_power(void)" in c,
         "suspend_power 已挂接": ".suspend_power  = lcm_suspend_power," in c,
+        "set_panel_disp_param 声明在调用前": ("extern int set_panel_disp_param(" in c
+                                        and c.find("extern int set_panel_disp_param(") < c.find("ret = set_panel_disp_param(")),
+        "send_cmd typedef 存在": "typedef void (*send_cmd)" in c,
+        "旧表已引用(避免-unused)": "s3pro_keep_legacy_tables" in c,
         "已移除 tps65132 调用": "tps65132_write_bytes(cmd" not in c,
         "已移除 ddp_dsi_power_off": "ddp_dsi_power_off(32" not in c,
         "花括号配平": c.count("{") == c.count("}"),
