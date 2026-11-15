@@ -81,6 +81,89 @@ def cfg_dir(gt):
     return name
 
 
+def patch_driver_key_path(drvp):
+    """让驱动直接上报真实键值，绕开失效的框架虚拟按键机制。
+
+    实测：/sys/board_properties/virtualkeys.mtk-tpd 不存在，
+    说明 tpd_button_init() 没跑，框架那条"坐标→按键"的路是死的。
+    而驱动里本来就有一行被注释掉的 input_report_key——它才是正确做法。
+    """
+    lines = open(drvp, encoding="utf-8", errors="surrogateescape").read().split("\n")
+
+    # --- 1) 打开能力注册（原为 #if 0）---
+    cap_i = None
+    for i, l in enumerate(lines):
+        if "#if 0/* #ifdef CONFIG_GTP_HAVE_TOUCH_KEY */" in l:
+            cap_i = i
+            break
+    if cap_i is None:
+        print("  !! 找不到能力注册块（#if 0 那段），跳过")
+        return False, False
+    cap_end = cap_i
+    while cap_end < len(lines) and lines[cap_end].strip() != "#endif":
+        cap_end += 1
+    cap_new = [
+        "/* S3PRO_GTP_KEYS: 注册按键能力（本块原为 #if 0，关了实体按键） */",
+        "#ifdef CONFIG_GTP_HAVE_TOUCH_KEY",
+        "\t{",
+        "\t\tint _ki;",
+        "",
+        "\t\tfor (_ki = 0; _ki < TPD_KEY_COUNT; _ki++)",
+        "\t\t\tinput_set_capability(tpd->dev, EV_KEY, touch_key_array[_ki]);",
+        "\t}",
+        "#endif",
+    ]
+    lines[cap_i:cap_end + 1] = cap_new
+
+    # --- 2) 改写按键上报：直接报键值，不再伪造触摸坐标 ---
+    rep_i = None
+    for i, l in enumerate(lines):
+        if "key_value = point_data[3 + 8 * touch_num];" in l:
+            rep_i = i
+            break
+    if rep_i is None:
+        print("  !! 找不到按键上报块，跳过")
+        return True, False
+    # 往回找到 #ifdef CONFIG_GTP_HAVE_TOUCH_KEY
+    rep_start = rep_i
+    while rep_start > 0 and "#ifdef CONFIG_GTP_HAVE_TOUCH_KEY" not in lines[rep_start]:
+        rep_start -= 1
+    # 往后找到该块结束（pre_key = key_value; 之前）
+    rep_end = rep_i
+    while rep_end < len(lines) and "pre_key = key_value;" not in lines[rep_end]:
+        rep_end += 1
+    rep_end -= 1  # 指向 #endif 上面的空行/尾行
+    # 精确定位到 #endif
+    k = rep_i
+    while k < len(lines) and lines[k].strip() != "#endif":
+        k += 1
+    rep_end = k
+    rep_new = [
+        "#ifdef CONFIG_GTP_HAVE_TOUCH_KEY",
+        "\t\tkey_value = point_data[3 + 8 * touch_num];",
+        "",
+        "\t\tif (key_value || pre_key) {",
+        "\t\t\tfor (i = 0; i < TPD_KEY_COUNT; i++) {",
+        "\t\t\t\tint _kd = (key_value & (0x01 << i)) ? 1 : 0;",
+        "\t\t\t\tint _kp = (pre_key & (0x01 << i)) ? 1 : 0;",
+        "",
+        "\t\t\t\tif (_kd != _kp)",
+        "\t\t\t\t\tinput_report_key(tpd->dev, touch_key_array[i], _kd);",
+        "\t\t\t}",
+        "\t\t\tinput_sync(tpd->dev);",
+        "",
+        "\t\t\ttouch_num = 0;",
+        "\t\t\tpre_touch = 0;",
+        "\t\t}",
+        "",
+        "#endif",
+    ]
+    lines[rep_start:rep_end + 1] = rep_new
+
+    open(drvp, "w", encoding="utf-8", errors="surrogateescape", newline="").write("\n".join(lines))
+    return True, True
+
+
 def find_gt911(tree):
     base = os.path.join(tree, "drivers", "input", "touchscreen", "mediatek", "GT911")
     return base if os.path.isdir(base) else None
@@ -154,6 +237,17 @@ def main():
                       "#define GTP_KEY_TAB\t {KEY_MENU, KEY_HOME, KEY_BACK, KEY_SEND}\n" + KEY_MACROS.strip() + "\n#endif", 1)
         open(mathp, "w", encoding="utf-8", errors="surrogateescape", newline="").write(h)
         print("  已补齐 TPD_KEY_COUNT / TPD_KEYS / GTP_KEY_MAP_ARRAY")
+
+    # ---- c) 驱动改为直接上报键值 ----
+    drvp = os.path.join(gt, "gt9xx_driver.c")
+    if MARK in open(drvp, encoding="utf-8", errors="surrogateescape").read():
+        print("  驱动按键路径已改过，跳过")
+    else:
+        ok_cap, ok_rep = patch_driver_key_path(drvp)
+        if ok_cap:
+            print("  已打开按键能力注册（原为 #if 0）")
+        if ok_rep:
+            print("  已改为直接上报键值（不再伪造触摸坐标）")
 
     if dry:
         print("\n  [dry-run] 未写文件")
