@@ -700,6 +700,19 @@ if [ -f "$ROOT/scripts/patch_sensors.py" ]; then
 else
     warn "scripts/patch_sensors.py 不存在 —— 自动亮度/自动旋转用不了"
 fi
+
+# ★ cm36686 编译失败的兜底：它用了 I2C_MASK_FLAG / I2C_WR_FLAG / I2C_RS_FLAG，
+#   这三个宏在 include/linux/i2c.h 里被 #ifdef CONFIG_MTK_I2C_EXTENSION 包着，
+#   而 MT8173 不在该选项的 def_bool 平台列表里 → 宏不存在 → 编译报
+#       error: 'I2C_MASK_FLAG' undeclared
+#   不去打开 CONFIG_MTK_I2C_EXTENSION（那会改变整条 I2C 驱动的消息处理路径，
+#   触摸屏等设备共用同一条总线，风险太大），改为在 cm36686.c 里补同值兜底定义。
+if [ -f "$ROOT/scripts/patch_cm36686_i2c.py" ]; then
+    echo "--- 修 cm36686 的 I2C 宏缺失（补兜底定义）---"
+    "$PY" "$ROOT/scripts/patch_cm36686_i2c.py" . || die "cm36686 I2C 宏补丁失败"
+else
+    warn "scripts/patch_cm36686_i2c.py 不存在 —— cm36686 会编译失败"
+fi
 grep -E '^CONFIG_LOCALVERSION' .config || true
 
 # 把和上次链接失败相关的开关打出来，方便下一轮定位到底缺哪个提供者
