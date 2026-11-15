@@ -127,10 +127,16 @@ static struct dentry *s3pro_early_dent;
 static struct dentry *s3pro_readid_dent;
 static struct dentry *s3pro_dsidump_dent;
 static struct dentry *s3pro_cmdmode_dent;
+static struct dentry *s3pro_variant_dent;
 
 /* S3PRO_CMDMODE: 推表前把 DSI 切到 CMD 模式（定义在 ddp_dsi.c） */
 extern int s3pro_cmd_mode_init;
 extern void s3pro_dsi_set_mode(int cmd_mode);
+
+/* S3PRO_STOCK_LCM: 面板初始化表选择（定义在面板驱动里）
+ *   1 = 表B（109 项）  0 = 表A（23 项）
+ * 用 weak 引用：若驱动没打原厂重写补丁，这里链接成 0，跳过节点创建。 */
+extern int s3pro_lcm_variant __attribute__((weak));
 
 /* S3PRO_DBG: 手动触发面板 DCS 回读（用于"面板健康时"的对照测量）
  * 用法：echo 1 > /sys/kernel/debug/s3pro_read_id */
@@ -187,6 +193,9 @@ static void s3pro_dbg_init_once(void)
 	if (s3pro_cmdmode_dent == NULL)
 		s3pro_cmdmode_dent = debugfs_create_u32("s3pro_cmd_mode_init", 0644,
 							NULL, (u32 *)&s3pro_cmd_mode_init);
+	if (&s3pro_lcm_variant != NULL && s3pro_variant_dent == NULL)
+		s3pro_variant_dent = debugfs_create_u32("s3pro_lcm_variant", 0644,
+							NULL, (u32 *)&s3pro_lcm_variant);
 }
 
 '''

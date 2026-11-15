@@ -470,13 +470,47 @@ fi
 #     4) 原厂/作者内核的初始化表有 109 项（含 25 条 gamma + display-on 0x29），
 #        我们的表只有 12 项且内容不同 → 面板收不到有效配置
 #   表数据来自原厂 7.0 内核二进制（kernel-patches/lcm-table/nt35523_fhd_init.c）
-if [ "${LCM_TABLE:-1}" = "1" ] && [ "${LCMPATCH:-1}" = "1" ] \
+# ★ 按原厂驱动重写面板回调（默认开启 LCM_STOCK=1）
+#
+#   依据：反汇编原厂 3.18.35 内核里的 nt35523_fhd_vdo_boe 驱动得到，不是猜的。
+#   原厂 LCM_DRIVER 结构体 @0xe8bcd0 的函数指针：
+#     init           0x3d9198  variant → 推表A(23) 或 表B(109)
+#     suspend        0x3d916c  只推睡眠表 4 项（0x28 / 0x10 / DELAY 120），不动 GPIO
+#     resume         0x3d9240  rst=1→5ms→rst=0→2ms→rst=1→25ms
+#                              → vsp=1→2ms → vsn=1→2ms → 推表（A 或 B 二选一）
+#     suspend_power  0x3d9390  rst=0→5ms, vsn=0→2ms, vsp=0→2ms
+#     resume_power   0x3d8ed8  1V8 上电 + 20ms
+#   三张表紧邻存放于 0xe89690：睡眠表 4 项 / 表A 23 项 / 表B 109 项
+#
+#   本树原实现的问题（本步全部修正）：
+#     * GPIO 顺序相反：先 VSP/VSN 再复位（原厂先复位再 VSP/VSN）
+#     * 延时 12/12/32/24/12，原厂 5/2/25/2/2
+#     * 把表A+表B 当成一张 132 项表全推（原厂二选一）
+#     * 睡眠表 5 项（含 0x53 和两段延时），原厂只有 4 项
+#     * suspend 里调 ddp_dsi_power_off、拉低所有 rails、还写本机没有的 tps65132
+#
+#   运行时切换用哪张表：echo 0/1 > /sys/kernel/debug/s3pro_lcm_variant
+if [ "${LCM_STOCK:-1}" = "1" ] && [ "${LCMPATCH:-1}" = "1" ] \
+   && [ -f "$ROOT/scripts/patch_lcm_stock.py" ]; then
+    echo "--- 按原厂实现重写面板驱动（反汇编依据）---"
+    "$PY" "$ROOT/scripts/patch_lcm_stock.py" . \
+        --tables "$ROOT/kernel-patches/lcm-table/stock_tables.c" || die "原厂驱动重写失败"
+else
+    echo "跳过原厂驱动重写（LCM_STOCK=${LCM_STOCK:-1}）"
+fi
+
+
+# ★ 替换面板初始化表（旧方案，默认关闭 LCM_TABLE=0）
+#
+#   旧方案把 23+109 两张表当成一张 132 项表推进去，原厂实际是二选一。
+#   已由上面的 LCM_STOCK 取代；保留此步仅用于回退对比。
+if [ "${LCM_TABLE:-0}" = "1" ] && [ "${LCMPATCH:-1}" = "1" ] \
    && [ -f "$ROOT/scripts/patch_lcm_table.py" ]; then
-    echo "--- 替换面板初始化表（原厂完整版，109 项）---"
+    echo "--- 替换面板初始化表（旧方案，132 项）---"
     "$PY" "$ROOT/scripts/patch_lcm_table.py" . \
         --table "$ROOT/kernel-patches/lcm-table/nt35523_fhd_init.c" || die "面板初始化表替换失败"
 else
-    echo "跳过面板初始化表替换（LCM_TABLE=${LCM_TABLE:-1}）"
+    echo "跳过面板初始化表替换（LCM_TABLE=${LCM_TABLE:-0}）"
 fi
 
 
@@ -573,6 +607,34 @@ else
 fi
 
 
+# ★ 实体电容触摸按键（默认开启 GTP_KEYS=1）
+#
+#   依据（都是从原厂/本机数据里取出来的，不是猜的）：
+#    1) 本机 DTB（authorparts/kernel.dtb）已声明按键：
+#         tpd-key-num       = 4
+#         tpd-key-local     = 139(MENU) 172(HOMEPAGE) 158(BACK) 0
+#         tpd-key-dim-local = (60,850,50,30) (180,850,50,30) (300,850,50,30) (420,850,50,30)
+#    2) 原厂 7.0 内核里有 4 套 GT911 配置数组（@0xaccbf0 等），
+#       其 +0x07 字节（GTP_REG_HAVE_KEY=0x804E）为 0x01 = 有按键；
+#       本树的 sample 配置是 0x06/0x00 → IC 根本不上报按键。
+#    3) 驱动里的 TPD_KEY_COUNT / TPD_KEYS / GTP_KEY_MAP_ARRAY 在本树完全没定义，
+#       打开 CONFIG_GTP_HAVE_TOUCH_KEY 会直接编译失败。
+#
+#   本步：把 defconfig 里该开关打开 + 用原厂配置数组替换 + 补齐三个宏。
+if [ "${GTP_KEYS:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_gt911_keys.py" ]; then
+    echo "--- 启用 GT911 实体触摸按键（原厂配置 + DTB 键值）---"
+    for df in arch/arm64/configs/h3000s_defconfig arch/arm64/configs/defconfig; do
+        if [ -f "$df" ]; then
+            sed -i 's/^# CONFIG_GTP_HAVE_TOUCH_KEY is not set/CONFIG_GTP_HAVE_TOUCH_KEY=y/' "$df"
+            echo "  defconfig: $df → $(grep -c '^CONFIG_GTP_HAVE_TOUCH_KEY=y' "$df" || true) 处已开启"
+        fi
+    done
+    "$PY" "$ROOT/scripts/patch_gt911_keys.py" . || die "触摸按键补丁失败"
+else
+    echo "跳过触摸按键（GTP_KEYS=${GTP_KEYS:-1}）"
+fi
+
+
 # ★ 面板驱动诊断：**只做 DCS 回读，不改任何时序**。
 #   build-50 已确认：休眠命令提前到关 DSI 之前、DSI_START=1、GPIO 全高、
 #   帧在流动，但屏幕仍然全黑；而 skip_stop=1（完全不拆）时屏幕正常。
@@ -581,11 +643,15 @@ fi
 #     推表后回读 0x0A（power mode，正常 0x9C）、0xDA/0xDB（面板 ID）
 #     读回有效 → 面板活着、上电复位正常 → 病灶在视频流参数（去 LK 对比 DSI 配置）
 #     读回全 0 → 面板没被正确上电/复位 → 再研究电源/复位时序
-if [ "${LCM_DEBUG:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_lcm_debug.py" ]; then
+#   注意：实测该面板的 DCS 读取通路不工作（面板健康时读回也是全 0），
+#   所以这个回读没有诊断价值，默认关闭 LCM_DEBUG=0。
+#   而且它把 mtk_lcm_s3pro_readback() 插在 lcm_suspend 之前，
+#   与原厂重写（LCM_STOCK）的区间重叠，同时开启会冲突。
+if [ "${LCM_DEBUG:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_lcm_debug.py" ]; then
     echo "--- 面板驱动诊断（DCS 回读，纯测量）---"
     "$PY" "$ROOT/scripts/patch_lcm_debug.py" . || die "面板 DCS 回读补丁失败"
 else
-    echo "跳过面板驱动诊断（LCM_DEBUG=${LCM_DEBUG:-1}）"
+    echo "跳过面板驱动诊断（LCM_DEBUG=${LCM_DEBUG:-0}）"
 fi
 
 
