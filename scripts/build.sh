@@ -671,6 +671,20 @@ if [ -f "$ROOT/scripts/patch_battery_fgadc.py" ]; then
 else
     warn "scripts/patch_battery_fgadc.py 不存在 —— 电量会一直是 0%"
 fi
+
+# ★ 电量恒为 0%（第二层）：FGADC 驱动所有 bm 命令都 `return 0`（状态码），
+#   真正的值写进 data 缓冲区；而 mt_battery_meter.c 却把返回值当电量：
+#       gFG_capacity_by_c = battery_meter_ctrl(...GET_HW_FG_CAR, &gFG_columb);
+#   → 电量恒等于 0。实机证据：voltage/current/ZCV 都是真值，只有 SOC=0。
+#   源码里本来就留着一行正确写法的注释：
+#       /*gFG_capacity = fgauge_read_capacity(0);*/
+#   这个补丁把它恢复成正式代码（三处：initialization / algo_run / algo_run_init）。
+if [ -f "$ROOT/scripts/patch_battery_soc.py" ]; then
+    echo "--- 修电量显示（把库仑计读数换算成真正的百分比）---"
+    "$PY" "$ROOT/scripts/patch_battery_soc.py" . || die "电量 SOC 补丁失败"
+else
+    warn "scripts/patch_battery_soc.py 不存在 —— 电量仍会恒为 0%"
+fi
 grep -E '^CONFIG_LOCALVERSION' .config || true
 
 # 把和上次链接失败相关的开关打出来，方便下一轮定位到底缺哪个提供者
@@ -811,6 +825,9 @@ if [ -f "$STOCK_BOOT" ]; then
     fi
     "$PY" "$ROOT/scripts/bootimg.py" splice \
         --template "$STOCK_BOOT" --kernel "$IMG" "${SPLICE_EXTRA[@]}" --out "$OUT/boot.img"
+
+    # 相机兼容垫片（libui_shim.so）不在这里编 —— 它是纯用户态的库，与内核无关。
+    # 单独用 .github/workflows/build-camera-shim.yml 生成。
 
     # 屏不亮的时候根本没法点"允许 USB 调试"，adb 会一直 unauthorized，
     # 日志抓不到。把 ramdisk 里的 ro.adb.secure 改成 0，adb 直接连。
