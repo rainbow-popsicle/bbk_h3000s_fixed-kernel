@@ -77,6 +77,32 @@ void s3pro_dsi_regs(const char *tag)
 	}
 }
 
+/* S3PRO_CMDMODE: 临时把 DSI 切到 CMD 模式。
+ *
+ * 原因（实测）：video 模式下 DSI_set_cmdq_V2() 会把 DCS 命令写进
+ * DSI_VM_CMD 缓冲，靠视频流的 VFP 空隙注入（每帧只能送一条）。
+ * 而唤醒时初始化表是在 dsi_start 之前推的——那时视频流没跑、没有 VFP，
+ * 132 条命令全部丢失，只留下 VM_CMD_START 卡在 1（实测 DSI_START=
+ * 0x00010001，正常应为 0x00000001），面板永远收不到初始化序列 → 黑屏。
+ *
+ * 切到 CMD 模式后，命令走正常的命令队列逐条发送，不依赖视频流。
+ * 推完表再切回 video 模式，然后才启动视频流。
+ *
+ * 运行时开关：/sys/kernel/debug/s3pro_cmd_mode_init（默认 1 开启） */
+int s3pro_cmd_mode_init = 1;
+
+void s3pro_dsi_set_mode(int cmd_mode)
+{
+	int i;
+	unsigned int m;
+
+	m = cmd_mode ? CMD_MODE : _dsi_context[0].dsi_params.mode;
+	for (i = 0; i < 2; i++)
+		DSI_OUTREGBIT(NULL, DSI_MODE_CTRL_REG,
+			      DSI_REG[i]->DSI_MODE_CTRL, MODE, m);
+	DISPMSG("S3PRO_DBG dsi mode -> %u (cmd=%d)\\n", m, cmd_mode);
+}
+
 '''
 
 NODES_FUNC = '''/* S3PRO_DBG: 运行时开关（普通 u32）
@@ -96,6 +122,11 @@ static struct dentry *s3pro_reinit_dent;
 static struct dentry *s3pro_early_dent;
 static struct dentry *s3pro_readid_dent;
 static struct dentry *s3pro_dsidump_dent;
+static struct dentry *s3pro_cmdmode_dent;
+
+/* S3PRO_CMDMODE: 推表前把 DSI 切到 CMD 模式（定义在 ddp_dsi.c） */
+extern int s3pro_cmd_mode_init;
+extern void s3pro_dsi_set_mode(int cmd_mode);
 
 /* S3PRO_DBG: 手动触发面板 DCS 回读（用于"面板健康时"的对照测量）
  * 用法：echo 1 > /sys/kernel/debug/s3pro_read_id */
@@ -149,6 +180,9 @@ static void s3pro_dbg_init_once(void)
 	if (s3pro_readid_dent == NULL)
 		s3pro_readid_dent = debugfs_create_file("s3pro_read_id", 0200,
 							NULL, NULL, &s3pro_read_id_fops);
+	if (s3pro_cmdmode_dent == NULL)
+		s3pro_cmdmode_dent = debugfs_create_u32("s3pro_cmd_mode_init", 0644,
+							NULL, (u32 *)&s3pro_cmd_mode_init);
 }
 
 '''
@@ -193,7 +227,14 @@ LCM_RESUME_BLOCK = (
 LCM_RESUME_BLOCK_NEW = (
     '	DISPCHECK("[POWER]lcm resume[begin]\\n");\n'
     '	DISPMSG("S3PRO_DBG resume: call lcm_resume, state=%d\\n", pgc->state);\n'
+    '	/* S3PRO_CMDMODE: video 模式下 DCS 命令走 VM_CMD 缓冲、需要视频流的\n'
+    '	 * VFP 空隙才能注入；而此处视频流还没启动（dsi_start 在后面），\n'
+    '	 * 132 条初始化命令会全部丢失。临时切 CMD 模式让命令走正常队列。 */\n'
+    '	if (s3pro_cmd_mode_init)\n'
+    '		s3pro_dsi_set_mode(1);\n'
     '	disp_lcm_resume(pgc->plcm);\n'
+    '	if (s3pro_cmd_mode_init)\n'
+    '		s3pro_dsi_set_mode(0);\n'
     '	DISPMSG("S3PRO_DBG resume: lcm_resume returned\\n");\n'
     '	DISPCHECK("[POWER]lcm resume[end]\\n");'
 )
@@ -271,7 +312,11 @@ PD_PATCHES = [
      '\tDISPMSG("S3PRO_DBG resume: path started, state=%d\\n", pgc->state);\n'
      '\tif (s3pro_reinit_on_resume) {\n'
      '\t\tDISPMSG("S3PRO_DBG resume: RE-PUSH table after start\\n");\n'
+     '\t\tif (s3pro_cmd_mode_init)\n'
+     '\t\t\ts3pro_dsi_set_mode(1);\n'
      '\t\tdisp_lcm_resume(pgc->plcm);\n'
+     '\t\tif (s3pro_cmd_mode_init)\n'
+     '\t\t\ts3pro_dsi_set_mode(0);\n'
      '\t\tDISPMSG("S3PRO_DBG resume: re-push done\\n");\n'
      '\t}'),
 ]
@@ -347,6 +392,8 @@ def main():
         "early_suspend 节点": "s3pro_lcm_suspend_early" in p,
         "read_id 节点": "s3pro_read_id" in p,
         "dsi_dump 节点": "s3pro_dsi_dump" in p,
+        "cmd_mode 节点": "s3pro_cmd_mode_init" in p,
+        "CMD 模式切换": "s3pro_dsi_set_mode(1)" in p,
         "节点定义在 init 之前": 0 <= nodes_at < init_at,
         "sleep 提前到关 DSI 之前": 0 <= early_at < stop_at,
         "原位置改为条件": "if (!s3pro_lcm_suspend_early)" in p,
