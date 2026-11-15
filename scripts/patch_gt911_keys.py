@@ -160,6 +160,21 @@ def patch_driver_key_path(drvp):
     ]
     lines[rep_start:rep_end + 1] = rep_new
 
+    # --- 3) 映射表不再使用，加引用避免 -Werror=unused-variable ---
+    for i, l in enumerate(lines):
+        if "touch_key_point_maping_array[] = GTP_KEY_MAP_ARRAY;" in l:
+            keep = [
+                "",
+                "/* S3PRO_GTP_KEYS: 改成直接上报键值后，坐标映射表不再被使用。",
+                " * 内核开了 -Werror=unused-variable，这里显式引用一次避免编译失败。 */",
+                "static void __attribute__((unused)) s3pro_keep_key_map(void)",
+                "{",
+                "\t(void)touch_key_point_maping_array;",
+                "}",
+            ]
+            lines[i + 1:i + 1] = keep
+            break
+
     open(drvp, "w", encoding="utf-8", errors="surrogateescape", newline="").write("\n".join(lines))
     return True, True
 
