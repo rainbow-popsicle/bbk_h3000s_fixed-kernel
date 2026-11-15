@@ -107,14 +107,18 @@ void s3pro_dsi_set_mode(int cmd_mode)
 
 NODES_FUNC = '''/* S3PRO_DBG: 运行时开关（普通 u32）
  *
- * s3pro_skip_stop          默认 0：写 1 → 熄屏完全不拆显示管线（仅诊断用）
+ * s3pro_skip_stop          默认 1：熄屏时**不拆显示管线**（只关背光）。
+ *                                 实测：拆掉管线后重新上电初始化面板会失败，
+ *                                 寄存器层面表现为 D-PHY 停在非 HS 状态
+ *                                 （hs_tx=8/ctl=2，正常应 4/16），导致永久黑屏。
+ *                                 写 0 可恢复完整拆除（用于继续研究）。
  * s3pro_reinit_on_resume   默认 0：写 1 → 唤醒后 start 之后再推一次初始化表
  * s3pro_lcm_suspend_early  默认 1：面板 sleep 命令是否提前到关 DSI 之前
  *                                 写 0 → 回到旧顺序（先停 DSI 再发 sleep）
  *
  * 本函数在 primary_display_init 里调用，所以开机后立即可用。
  */
-static u32 s3pro_skip_stop;
+static u32 s3pro_skip_stop = 1;
 static u32 s3pro_reinit_on_resume;
 static u32 s3pro_lcm_suspend_early = 1;
 static struct dentry *s3pro_skip_dent;
