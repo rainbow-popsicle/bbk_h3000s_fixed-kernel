@@ -686,6 +686,22 @@ else
     warn "scripts/patch_battery_soc.py 不存在 —— 电量仍会恒为 0%"
 fi
 
+# ★ 电池容量（Qmax）配错：本机 7200mAh，内核按 4000mAh 累积库仑计。
+#   设备 DTB 里 battery = "ariel_battery"，dmesg 确认走的是
+#       ariel8_custom_battery_init()
+#   而该函数里作者留了 todo，Qmax 全是 4000（MTK 通用占位值）：
+#       /* todo: should update ariel8 battery capacity here */
+#       p_meter_data->q_max_pos_50 = 4000;
+#   用 4000 当分母算 DOD，放掉 4000mAh 就认为放完了，实际还剩 3200mAh，
+#   于是出现"显示 66% 一夜关机""20 分钟只涨 1%""拔电瞬间断电"等现象。
+#   本机 nvram 里没有电池参数（只有 BT_Addr/WIFI），运行期补不回来，只能改源码。
+if [ -f "$ROOT/scripts/patch_battery_qmax.py" ]; then
+    echo "--- 修电池容量（Qmax 4000 → 7200 mAh）---"
+    "$PY" "$ROOT/scripts/patch_battery_qmax.py" . || die "Qmax 补丁失败"
+else
+    warn "scripts/patch_battery_qmax.py 不存在 —— 电量估算仍会偏差 1.8 倍"
+fi
+
 # ★ 传感器驱动没打开（自动亮度 / 自动旋转用不了）
 #   硬件确认方式：自写的静态 ARM 探测工具直接读 I2C 寄存器
 #     加速度计 /dev/i2c-6 @0x19, WHO_AM_I(0x0F) = 0x33  → LIS3DH
@@ -712,6 +728,25 @@ if [ -f "$ROOT/scripts/patch_cm36686_i2c.py" ]; then
     "$PY" "$ROOT/scripts/patch_cm36686_i2c.py" . || die "cm36686 I2C 宏补丁失败"
 else
     warn "scripts/patch_cm36686_i2c.py 不存在 —— cm36686 会编译失败"
+fi
+
+# ★ cm36686 运行期失败：光感注册不上。
+#   实机 dmesg（build 68）：
+#       [Sensor dts] Device Tree: can not find alsps node!. Go to use old cust info
+#       <ALS/PS> cm36686_init 1903 : get_alsps_dts_func fail
+#       <ALS/PS> alsps_real_driver_init fail
+#   原因：cm36686.c 找的是 compatible="mediatek,CM36686"，
+#   而本机 DTB 里 alsps 节点的 compatible 是 "mediatek,alsps"，必然找不到。
+#   且它失败后直接 return 0（一次都不尝试），而 alsps_cust 又只是个
+#   未初始化的全局变量（全零，i2c_num=0）。
+#   对照：同批的 LIS3DH 加速度计成功了 —— 因为它的 init 有 builtin 兜底。
+#   修法：照 LIS3DH 的模式，给 alsps_cust 填真实参数（i2c-8 @ 0x1C），
+#         并让 DTS 查找失败时兜底到它。
+if [ -f "$ROOT/scripts/patch_cm36686_dts.py" ]; then
+    echo "--- 让 cm36686 在 DTB 无匹配节点时兜底到静态配置 ---"
+    "$PY" "$ROOT/scripts/patch_cm36686_dts.py" . || die "cm36686 DTS 兜底补丁失败"
+else
+    warn "scripts/patch_cm36686_dts.py 不存在 —— 光感仍注册不上"
 fi
 grep -E '^CONFIG_LOCALVERSION' .config || true
 
