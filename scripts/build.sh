@@ -748,6 +748,41 @@ if [ -f "$ROOT/scripts/patch_cm36686_dts.py" ]; then
 else
     warn "scripts/patch_cm36686_dts.py 不存在 —— 光感仍注册不上"
 fi
+
+# ★ 补丁生效性验证（防"脚本跑了但没改到"）
+#   前几轮出现过：build.sh 里有调用、补丁脚本也正确，但内核里没有兜底字符串
+#   （build 68/69 都是这样），导致光感始终注册不上却看不出原因。
+#   这里直接检查源码里是否真的出现了兜底代码，没有就立即失败。
+if [ -f "drivers/misc/mediatek/alsps/cm36686-new/cm36686.c" ]; then
+    if grep -q "fall back to alsps_cust" drivers/misc/mediatek/alsps/cm36686-new/cm36686.c; then
+        echo "  [verify] cm36686 DTS 兜底代码已写入源码 ✓"
+    else
+        die "cm36686 DTS 兜底补丁未生效（源码里找不到 fall back to alsps_cust）"
+    fi
+    if grep -q "struct alsps_hw alsps_cust = {" drivers/misc/mediatek/alsps/cm36686-new/cm36686.c; then
+        echo "  [verify] alsps_cust 静态配置已初始化 ✓"
+    else
+        die "alsps_cust 静态配置未初始化（补丁未生效）"
+    fi
+fi
+
+# 同样的方式验证 Qmax 补丁
+if [ -f "drivers/power/mt81xx/mt_bm_data.c" ]; then
+    if grep -q "q_max_pos_50 = 7200" drivers/power/mt81xx/mt_bm_data.c; then
+        echo "  [verify] Qmax 已改为 7200mAh ✓"
+    else
+        warn "Qmax 补丁未生效（源码里没有 q_max_pos_50 = 7200）"
+    fi
+fi
+
+# 验证传感器驱动配置真的被打开
+for k in CONFIG_MTK_LIS3DH CONFIG_MTK_CM36686_NEW CONFIG_CUSTOM_KERNEL_ALSPS; do
+    if grep -q "^$k=y" .config; then
+        echo "  [verify] $k=y ✓"
+    else
+        warn "$k 未打开（自动亮度/自动旋转可能失效）"
+    fi
+done
 grep -E '^CONFIG_LOCALVERSION' .config || true
 
 # 把和上次链接失败相关的开关打出来，方便下一轮定位到底缺哪个提供者
