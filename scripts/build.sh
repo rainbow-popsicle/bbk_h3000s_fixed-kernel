@@ -71,6 +71,39 @@ warn() { printf '\033[1;33m[warn] %s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[1;31m[error] %s\033[0m\n' "$*" >&2; exit 1; }
 
 # --------------------------------------------------------------------------- #
+# 前置检查：确认所有补丁脚本都在。
+#   为什么要有这一步：CI 是从 GitHub 仓库 checkout 的，如果某个 scripts/*.py
+#   没被推上去，后面只会走到某个 [verify] 闸门报“补丁未生效”，
+#   完全看不出真正原因是“文件压根没上传”，白烧一次编译。
+step "0/6 检查补丁脚本是否齐全"
+MISSING=""
+for s in \
+    patch_binder_modern.py \
+    patch_gt911_touch.py patch_gt911_keys.py \
+    patch_sensors.py \
+    patch_battery_qmax.py patch_battery_soc.py patch_battery_fgadc.py \
+    patch_lcm_stock.py patch_lcm_init.py patch_lcm_table.py \
+    patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
+    patch_disp_debug.py \
+    patch_cm36686_i2c.py patch_cm36686_dts.py \
+    patch_alsps_eint.py patch_alsps_ap3220.py \
+    patch_vcodec_irq.py \
+    patch_ramdisk.py \
+    bootimg.py
+do
+    [ -f "$ROOT/scripts/$s" ] || MISSING="$MISSING $s"
+done
+if [ -n "$MISSING" ]; then
+    printf '\033[1;31m[error] 以下补丁脚本在仓库里缺失：\033[0m\n' >&2
+    for s in $MISSING; do
+        printf '\033[1;31m          scripts/%s\033[0m\n' "$s" >&2
+    done
+    printf '\033[1;31m[error] CI 是从 GitHub 仓库 checkout 的，把缺失文件推到仓库后重跑。\033[0m\n' >&2
+    exit 1
+fi
+echo "  全部补丁脚本都在 ✓（共 21 个）"
+
+# --------------------------------------------------------------------------- #
 step "1/6 主机依赖（脚本版本 $BUILD_SH_VERSION）"
 sudo apt-get update -qq
 sudo apt-get install -y -qq --no-install-recommends \
