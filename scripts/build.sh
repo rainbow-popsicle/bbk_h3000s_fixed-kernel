@@ -749,6 +749,80 @@ else
     warn "scripts/patch_cm36686_dts.py 不存在 —— 光感仍注册不上"
 fi
 
+# ★ EINT 补丁 —— 光感 probe 失败的真正原因（2026-11-17 实机定位）
+#   现象：刷了带 cm36686 的内核后，光感依然没有，dmesg：
+#       <ALS/PS> cm36686_setup_eint 1065 : Cannot find alsps pinctrl default!
+#       <ALS/PS> cm36686_setup_eint 1099 : null irq node!!
+#       cm36686: probe of 8-001c failed with error -22
+#   根因（两处名字写错 + 一处危险写法）：
+#     1) 驱动找 EINT 节点用的是 "mediatek, ALS-eint"（逗号后多一个空格，
+#        名字本身也不对），而本机 DTB 里是 /alspseint@0
+#        compatible = "mediatek,alsps_int"，interrupts = <0x61 0x08>。
+#        名字对不上 → irq_node=NULL → setup_eint 走 else → return -EINVAL。
+#     2) alspseint@0 没有 "debounce" 属性，原代码会把 ints[0]=0 传给
+#        gpio_request(0)，等于乱抢 GPIO 0。
+#     3) EINT 失败被当成致命错误。但核心层 alsps.c 的 ALS 数据是定时器
+#        轮询出来的（mod_timer(&cxt->timer_als, ...)），不依赖 EINT。
+#   修法：见 scripts/patch_alsps_eint.py（A/B/C 三段）。
+if [ -f "$ROOT/scripts/patch_alsps_eint.py" ]; then
+    echo "--- 修 cm36686 的 EINT 节点名（光感 probe 失败根因）---"
+    "$PY" "$ROOT/scripts/patch_alsps_eint.py" . || die "alsps EINT 补丁失败"
+else
+    warn "scripts/patch_alsps_eint.py 不存在 —— 光感仍会 probe 失败(-22)"
+fi
+
+# ★ 把驱动改成说 AP3220 的话 —— 光感真正能出数的关键
+#   本机光感是 AP3220（原厂驱动内部名 ap3xx6），不是 CM36686：
+#     · 原厂 7.0 内核字符串：ap3xx6 ×54、AP3220 ×11、cm36686 零次
+#     · 实机裸 syscall 探针：i2c-8@0x1C 有 ACK；CM36686 的 0x60 全总线无 ACK
+#   原厂驱动寄存器表（反汇编 ap3xx6 得出）：
+#     reg0x00  bit0 = ALS 使能（orr #0x1 @0x8381234）
+#              bit1 = PS  使能（orr #0x2 @0x8381350）
+#     reg0x0C/0x0D = ALS 数据(小端)，reg0x0E/0x0F = PS 数据(小端)
+#     I2C：写 = send({reg,val},2)；读 = send(reg,1)+recv(val,1)，无 MTK 扩展标志
+#   实机已验证：置 bit0 后 ALS 由恒 0 变为持续变化，手电筒直照达 28452(0x6F24)。
+if [ -f "$ROOT/scripts/patch_alsps_ap3220.py" ]; then
+    echo "--- 把 cm36686 驱动重映射为 AP3220（寄存器/使能位/I2C 读法）---"
+    "$PY" "$ROOT/scripts/patch_alsps_ap3220.py" . || die "AP3220 重映射补丁失败"
+else
+    warn "scripts/patch_alsps_ap3220.py 不存在 —— 光感仍按 CM36686 解析，读不到数据"
+fi
+
+# ★ VPU 时钟补丁 —— 默认【关闭】
+#   假设：vdec_power_on 里所有 clk_prepare/clk_enable 被注释，VPU 无时钟。
+#   疑点：clk_summary 里 enable_count=0 是在【空闲时】测的，空闲时时钟本来就该关，
+#         所以这个假设【未被证实】，不能当已知根因而默认打开。
+#   真正已证实的失败链是用户态日志里的：
+#         Can not find MVA from VA → Cannot init driver
+#         → InitVideoDecodeHW failed → OMX error 0x80001005
+#         → ACodec 放弃 → VLC 回退软解 → PPT 卡顿
+#   要 A/B 验证时钟假设时，用 VCODEC_CLK_FIX=1 显式打开。
+if [ "${VCODEC_CLK_FIX:-0}" = "1" ]; then
+    if [ -f "$ROOT/scripts/patch_vcodec_clk.py" ]; then
+        echo "--- [实验] 修 VPU 硬解时钟（vdec_power_on 补 vcodecpll_ck/vdec_sel）---"
+        "$PY" "$ROOT/scripts/patch_vcodec_clk.py" . || die "vcodec 时钟补丁失败"
+    else
+        warn "scripts/patch_vcodec_clk.py 不存在"
+    fi
+else
+    echo "--- VPU 时钟补丁：未启用（VCODEC_CLK_FIX=1 可开启实验）---"
+fi
+
+# ★ VDEC/VENC 中断号重映射 —— 默认【开启】（有实机证据）
+#   证据：属性 ro.mtk_sec_video_path_support=0 之后，解码器初始化通过了，
+#         但紧接着报 MtkOmxVdecDecodeThread() line: 1400 WAIT timeout，
+#         且 /proc/interrupts 里始终没有 VDEC(SPI 204) 那一行。
+#   原因：vcodec_driver_init()（module_init）里 irq_of_parse_and_map 时
+#         MTK 层级中断控制器 mtk-sysirq 还没就绪，返回 0；
+#         之后 request_irq(0) 必失败，VPU 永远等不到完成中断。
+#   修法：在 vcodec_probe()（中断控制器已就绪）里补一次映射。
+if [ -f "$ROOT/scripts/patch_vcodec_irq.py" ]; then
+    echo "--- 修 VDEC/VENC 中断映射（probe 阶段重映射）---"
+    "$PY" "$ROOT/scripts/patch_vcodec_irq.py" . || die "vcodec IRQ 补丁失败"
+else
+    warn "scripts/patch_vcodec_irq.py 不存在 —— 硬解仍会 WAIT timeout 卡死"
+fi
+
 # ★ 补丁生效性验证（防"脚本跑了但没改到"）
 #   前几轮出现过：build.sh 里有调用、补丁脚本也正确，但内核里没有兜底字符串
 #   （build 68/69 都是这样），导致光感始终注册不上却看不出原因。
@@ -764,6 +838,50 @@ if [ -f "drivers/misc/mediatek/alsps/cm36686-new/cm36686.c" ]; then
     else
         die "alsps_cust 静态配置未初始化（补丁未生效）"
     fi
+    # EINT 补丁三段，任何一段没写进去都会让光感继续 probe 失败(-22)
+    if grep -q "mediatek,alsps_int" drivers/misc/mediatek/alsps/cm36686-new/cm36686.c; then
+        echo "  [verify] EINT 节点名已改为 mediatek,alsps_int ✓"
+    else
+        die "EINT 节点名补丁未生效（源码里找不到 mediatek,alsps_int）"
+    fi
+    if grep -q "no debounce prop" drivers/misc/mediatek/alsps/cm36686-new/cm36686.c; then
+        echo "  [verify] debounce 保护已写入（不会乱抓 GPIO 0）✓"
+    else
+        die "debounce 保护补丁未生效"
+    fi
+    if grep -q "continue in polling mode" drivers/misc/mediatek/alsps/cm36686-new/cm36686.c; then
+        echo "  [verify] EINT 失败已改为非致命 ✓"
+    else
+        die "EINT 非致命补丁未生效（probe 仍会因 -22 失败）"
+    fi
+    # 标定表项数必须与结构体一致：als_level 15 项、als_value 16 项
+    if grep -q "0x2A8" drivers/misc/mediatek/alsps/cm36686-new/cm36686.c; then
+        echo "  [verify] 标定表/PS 阈值已用 DTB 真实值 ✓"
+    else
+        warn "alsps_cust 标定表似乎还是旧值（缺 0x2A8）"
+    fi
+    # ---- AP3220 重映射：任何一段没进源码，光感都读不到数 ----
+    if grep -q "AP3220-REMAP" drivers/misc/mediatek/alsps/cm36686-new/cm36686.c; then
+        echo "  [verify] AP3220 重映射已写入源码 ✓"
+    else
+        die "AP3220 重映射补丁未生效（光感寄存器仍按 CM36686 解析）"
+    fi
+    if grep -q "i2c_master_recv" drivers/misc/mediatek/alsps/cm36686-new/cm36686.c; then
+        echo "  [verify] I2C 读已改为 send+recv（不再用 MTK 扩展位）✓"
+    else
+        die "I2C 读路径补丁未生效（读操作会因 addr=0x181c 全部 NAK）"
+    fi
+    if grep -q "v |= 0x01;" drivers/misc/mediatek/alsps/cm36686-new/cm36686.c; then
+        echo "  [verify] ALS 使能位已改为 reg0x00 bit0 置 1 ✓"
+    else
+        die "ALS 使能位补丁未生效（CM36686 语义是清 bit0，对 AP3220 正好相反）"
+    fi
+    if grep -q "CM36686_REG_ALS_DATA		0X0C" drivers/misc/mediatek/alsps/cm36686-new/cm36686.h 2>/dev/null || \
+       grep -qE "CM36686_REG_ALS_DATA[[:space:]]+0X0C" drivers/misc/mediatek/alsps/cm36686-new/cm36686.h; then
+        echo "  [verify] ALS 数据寄存器已改为 0x0C ✓"
+    else
+        die "头文件 ALS_DATA 未改为 0x0C（会读到 CM36686 的寄存器）"
+    fi
 fi
 
 # 同样的方式验证 Qmax 补丁
@@ -772,6 +890,26 @@ if [ -f "drivers/power/mt81xx/mt_bm_data.c" ]; then
         echo "  [verify] Qmax 已改为 7200mAh ✓"
     else
         warn "Qmax 补丁未生效（源码里没有 q_max_pos_50 = 7200）"
+    fi
+fi
+
+# 验证 vcodec 时钟补丁（仅在显式开启时检查）
+if [ "${VCODEC_CLK_FIX:-0}" = "1" ]; then
+    if [ -f "drivers/misc/mediatek/videocodec/mt8173/videocodec_kernel_driver.c" ]; then
+        if grep -q "s3pro_vdec_pll" drivers/misc/mediatek/videocodec/mt8173/videocodec_kernel_driver.c; then
+            echo "  [verify] VPU 时钟补丁已写入 vdec_power_on ✓"
+        else
+            die "VPU 时钟补丁未生效（源码里找不到 s3pro_vdec_pll）"
+        fi
+    fi
+fi
+
+# 验证 vcodec IRQ 重映射补丁（默认必查）
+if [ -f "drivers/misc/mediatek/videocodec/mt8173/videocodec_kernel_driver.c" ]; then
+    if grep -q "S3PRO-DIAG" drivers/misc/mediatek/videocodec/mt8173/videocodec_kernel_driver.c; then
+        echo "  [verify] VDEC/VENC 中断重映射补丁已写入 probe ✓"
+    else
+        die "VDEC IRQ 重映射补丁未生效（源码里找不到 S3PRO-DIAG）"
     fi
 fi
 
@@ -939,6 +1077,32 @@ if [ -f "$STOCK_BOOT" ]; then
             warn "scripts/patch_ramdisk.py 不存在：adb 仍然需要授权（屏不亮时没法点同意）"
             warn "想要免授权，把 scripts/patch_ramdisk.py 也传到仓库里"
         fi
+    fi
+
+    # ★ 硬解必需：关掉"安全视频路径"。
+    #   现象（实机）：VLC 播 4K 先花屏1秒→流畅约3秒→卡成PPT；
+    #       logcat: Cannot init driver ×30 → InitVideoDecodeHW failed (not compatible
+    #       → ACodec ERROR(0x80001005) → VLC 退回软解。
+    #   原因：/system/build.prop 里 ro.mtk_sec_video_path_support=1，
+    #        OMX 库据此创建"安全实例"（bSecureInst=TRUE），内核 vcodec 驱动
+    #        跳过 request_irq 把活干给 MTEE/TrustZone；而本内核虽开了
+    #        CONFIG_MTK_IN_HOUSE_TEE_SUPPORT，TEE 侧的 VPU 初始化却失败。
+    #   修法：把该属性置 0，强制走普通（非安全）解码路径。
+    #   放在 ramdisk 的 default.prop 里是因为 ro.* 属性"先设先赢"，
+    #   它能盖过 /system/build.prop，这样只刷 boot.img 也能生效。
+    if [ -f "$ROOT/scripts/patch_ramdisk.py" ]; then
+        echo "--- 关闭安全视频路径（ro.mtk_sec_video_path_support=0）---"
+        "$PY" "$ROOT/scripts/patch_ramdisk.py" "$OUT/boot.img" \
+            --prop ro.mtk_sec_video_path_support=0 \
+            || warn "关闭安全视频路径失败，硬解仍会因 TEE 初始化失败"
+        if "$PY" "$ROOT/scripts/patch_ramdisk.py" "$OUT/boot.img" --check 2>/dev/null \
+                | grep -qi "sec_video_path"; then
+            echo "  [verify] ro.mtk_sec_video_path_support 已写入 ramdisk ✓"
+        else
+            warn "ramdisk 里没读到 sec_video_path 属性，硬解可能仍失败"
+        fi
+    else
+        warn "scripts/patch_ramdisk.py 不存在：安全视频路径不会被关闭，硬解仍不可用"
     fi
 
 
