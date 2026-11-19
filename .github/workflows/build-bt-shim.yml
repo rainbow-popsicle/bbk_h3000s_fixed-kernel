@@ -1,0 +1,65 @@
+name: build-bt-shim
+
+# 单独编译蓝牙厂商库封装层 libbt-vendor.so（纯用户态库，与内核无关）
+#
+# === 为什么需要 ===
+# 本机（BBK S3 Pro / MT8173）蓝牙走 MTK STP 通道（/dev/stpbt），
+# 真正的 STP 逻辑在设备自带的 64 位 libbluetooth_mtk.so。
+# 但上层 HAL 要找 libbt-vendor.so 导出 BLUETOOTH_VENDOR_LIB_INTERFACE。
+# 原厂只有 32 位版本，64 位 ROM 加载不了 → 本库做薄转发。
+#
+# v2 修正：旧版基于"内核只允许 open stpbt 一次"的错误假设写了一堆绕圈
+# 逻辑（扫 /proc/self/fd、fw_cfg 预热两次、重扫 fd），实测内核可反复
+# open/close，这些逻辑是多余的且引入 bug。v2 直接用 dlsym 读 fd 槽。
+#
+# === 用法 ===
+# Actions 页面 → build-bt-shim → Run workflow
+# 下载 artifact 里的 libbt-vendor.so，然后：
+#   adb root
+#   adb push libbt-vendor.so /sdcard/
+#   adb shell 'mount -o rw,remount /system; \
+#              cp /sdcard/libbt-vendor.so /system/vendor/lib64/libbt-vendor.so; \
+#              chmod 644 /system/vendor/lib64/libbt-vendor.so; \
+#              mount -o ro,remount /system'
+#   adb shell 'settings put global bluetooth_on 1; pm enable com.android.bluetooth'
+#   adb reboot
+
+on:
+  workflow_dispatch:
+
+jobs:
+  shim:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 64 位 ARM 交叉编译器
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu
+          aarch64-linux-gnu-gcc --version | head -1
+
+      - name: 编译 libbt-vendor.so
+        run: |
+          set -e
+          SRC=kernel-patches/bt-shim/libbt-vendor.c
+          test -f "$SRC" || { echo "缺少 $SRC"; exit 1; }
+          mkdir -p out
+          aarch64-linux-gnu-gcc -fPIC -shared -nostdlib -Os \
+            -o out/libbt-vendor.so "$SRC"
+          echo "--- 产物 ---"
+          ls -l out/libbt-vendor.so
+          file out/libbt-vendor.so || true
+          echo "--- 导出的符号 ---"
+          aarch64-linux-gnu-nm -D out/libbt-vendor.so 2>/dev/null | head -10 || true
+          echo "--- 未定义符号（应从 bionic/libbluetooth_mtk 解析）---"
+          aarch64-linux-gnu-nm -D --undefined-only out/libbt-vendor.so 2>/dev/null | head -20 || true
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: bt-shim-${{ github.run_number }}
+          path: out/libbt-vendor.so
+          if-no-files-found: error
+          retention-days: 30
