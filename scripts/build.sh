@@ -88,6 +88,7 @@ for s in \
     patch_cm36686_i2c.py patch_cm36686_dts.py \
     patch_alsps_eint.py patch_alsps_ap3220.py \
     patch_vcodec_irq.py \
+    patch_bt_bluez.py \
     patch_ramdisk.py \
     bootimg.py
 do
@@ -854,6 +855,18 @@ if [ -f "$ROOT/scripts/patch_vcodec_irq.py" ]; then
     "$PY" "$ROOT/scripts/patch_vcodec_irq.py" . || die "vcodec IRQ 补丁失败"
 else
     warn "scripts/patch_vcodec_irq.py 不存在 —— 硬解仍会 WAIT timeout 卡死"
+fi
+
+# ★ 蓝牙：把 STP 通道切到 BlueZ/H4 模式（AOSP 8.1 的 H4Protocol 才能读懂）
+#   BT_open() 里默认 set_bluez(0) 是 MTK 私有帧，H4Protocol 解析失败会崩溃。
+#   设成 1 = 标准 H4。想要回退可设环境变量 S3PRO_BT_BLUEZ=0。
+if [ "${S3PRO_BT_BLUEZ:-1}" = "1" ]; then
+    if [ -f "$ROOT/scripts/patch_bt_bluez.py" ]; then
+        echo "--- 蓝牙 STP 切 BlueZ/H4 模式 ---"
+        "$PY" "$ROOT/scripts/patch_bt_bluez.py" . || die "BT BlueZ 补丁失败"
+    else
+        warn "scripts/patch_bt_bluez.py 不存在 —— 蓝牙仍是 MTK 私有帧模式"
+    fi
 fi
 
 # ★ 补丁生效性验证（防"脚本跑了但没改到"）
