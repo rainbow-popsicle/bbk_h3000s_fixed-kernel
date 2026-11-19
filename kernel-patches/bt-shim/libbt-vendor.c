@@ -154,23 +154,43 @@ static int op_power_ctrl(void *arg)
 	return BT_VND_OP_RESULT_SUCCESS;
 }
 
-/* USERIAL_OPEN：init_uart 打开 stpbt，扫 /proc 拿到 fd 交给 HAL */
+/* USERIAL_OPEN：直接使用 init_uart() 的返回值作为 fd。
+ *
+ * 反汇编 libbluetooth_mtk.so 的 init_uart (0x1890, size=156) 证实：
+ *   0x18c0: open("/dev/stpbt", 0x902)
+ *   0x18d0: str  w0, [x8, #8]      ; 同时保存到 .data+0x8008
+ *   0x18d8: tbz  w0, #0x1f, 0x1920 ; fd >= 0 直接跳到返回
+ *   0x191c: mov  w0, #-1            ; 只有失败才返回 -1
+ * → 成功时 w0 就是打开的 fd，直接拿来用。
+ *
+ * 之前版本去扫 /proc/self/fd 找 "stpbt"（因为误以为 init_uart 返回 -1），
+ * 在 fw_cfg 之后进程 fd 表变化时会扫到错误的 fd，
+ * 导致 H4Protocol 读到 ENOTSOCK / Unexpected EOF。
+ * 现在优先用返回值，扫 /proc 仅作兜底。
+ */
 static int op_userial_open(void *arg)
 {
 	int *fds = (int *)arg;
 	int fd;
 
 	LOGI("BT_VND_OP_USERIAL_OPEN");
-	init_uart(0);
-	fd = find_stpbt_fd();
+	fd = init_uart(0);           /* 返回值即 fd（失败为 -1） */
+	LOGI("init_uart returned fd=%d", fd);
 
-	LOGI("userial opened fd=%d", fd);
-	if (fd < 0)
+	if (fd < 0) {
+		fd = find_stpbt_fd();    /* 兜底：万一返回值和预期不符 */
+		LOGI("fallback scan fd=%d", fd);
+	}
+
+	if (fd < 0) {
+		LOGE("userial open failed");
 		return BT_VND_OP_RESULT_FAIL;
+	}
 	if (fds) {
 		fds[0] = fd;
 		fds[1] = -1;
 	}
+	LOGI("userial opened fd=%d", fd);
 	return 1;
 }
 
@@ -182,11 +202,35 @@ static int op_userial_close(void *arg)
 	return BT_VND_OP_RESULT_SUCCESS;
 }
 
-/* FW_CFG：只调一次，不做预热、不重扫 fd（内核可反复 open，无需绕圈） */
+/* FW_CFG：需要预热两次。
+ *
+ * 实机日志证据（2026-11-19 22:02，WiFi 关闭、NVRAM 权限已修）：
+ *   22:02:12.634  GORM_FW_Init_Thread: FW init thread starts
+ *   22:02:12.634  GORM_FW_Init_Thread: Unknown combo chip id: 0000
+ *   22:02:12.634  GORM_FW_Init_Thread: No matching init script   ← 固件没下载
+ *   22:02:13.262  bt_get_combo_id: Combo chip id 6630            ← 晚了 0.6 秒
+ *
+ * mtk_fw_cfg 内部：主线程 bt_get_combo_id() 探测芯片并写入库内全局变量，
+ * 然后启动 GORM_FW_Init_Thread 子线程；子线程读该全局变量决定固件脚本。
+ * 冷启动时子线程抢在主线程写入之前跑，读到 0000 → 匹配不到脚本 → 固件不下载。
+ *
+ * 处理：第一次调用只做"预热"（让主线程把 combo id 探出来并写入全局变量，
+ * 这次子线程失败属预期）；第二次调用时全局变量已是 6630，固件正常匹配下载。
+ */
 static int op_fw_cfg(void *arg)
 {
+	static int fw_cfg_warmed;
 	int ret;
+
 	LOGI("BT_VND_OP_FW_CFG");
+
+	if (!fw_cfg_warmed) {
+		LOGI("fw_cfg warm-up: populate combo chip id");
+		mtk_fw_cfg(arg);
+		fw_cfg_warmed = 1;
+		LOGI("fw_cfg warm-up done (firmware thread failure expected once)");
+	}
+
 	ret = mtk_fw_cfg(arg);
 	LOGI("fw_cfg result=%d", ret);
 	return (ret == 0) ? BT_VND_OP_RESULT_SUCCESS : BT_VND_OP_RESULT_FAIL;
