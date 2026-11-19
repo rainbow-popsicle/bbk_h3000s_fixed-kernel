@@ -107,13 +107,20 @@ static s32 s3pro_coulomb_soc(s32 car)
 }
 """
 
-    # 先插入库仑累计辅助函数（必须定义在 fgauge_algo_run 之前）
-    # 注意：必须用 lambda 作替换，否则 re.sub 会把 HELPER 里的 \n 解释成换行
-    _init_re = re.compile(r"void fgauge_initialization\(void\)\s*\{")
-    if "s3pro_coulomb_soc" not in out and _init_re.search(out):
-        out = _init_re.sub(
-            lambda m: HELPER.strip() + "\n\nvoid fgauge_initialization(void)\n{",
-            out, count=1)
+    # 先插入库仑累计辅助函数：必须放在【最早】使用它的函数之前。
+    # 实测源码顺序（行号）：fgauge_algo_run(1468) < fgauge_algo_run_init(1544)
+    #                       < fgauge_initialization(1598)
+    # 一开始插在 fgauge_initialization 之前 → 编译报 implicit declaration，已修正。
+    # 用字符串切片插入（不用 re.sub），避免替换串里的 \n 被解释成换行。
+    _defs = [
+        r"void fgauge_algo_run\(void\)\s*\{",
+        r"void fgauge_algo_run_init\(void\)\s*\{",
+        r"void fgauge_initialization\(void\)\s*\{",
+    ]
+    _pos = [m.start() for m in (re.search(d, out) for d in _defs) if m]
+    if "s3pro_coulomb_soc" not in out and _pos:
+        _at = min(_pos)
+        out = out[:_at] + HELPER.strip() + "\n\n" + out[_at:]
         changes.append("insert s3pro_coulomb_soc")
 
     out = re.sub(r"void fgauge_initialization\(void\)\s*\{.*?\n\}", fix_init, out, flags=re.S)
