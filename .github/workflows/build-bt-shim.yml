@@ -34,11 +34,22 @@ jobs:
       - name: 检出源码
         uses: actions/checkout@v4
 
-      - name: 安装 clang + lld
+      - name: 安装 64 位 ARM 交叉编译器（带重试，防 apt 抖动）
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq clang lld
-          clang --version | head -1
+          # GitHub runner 偶发 apt 网络抖动（Failed to fetch / Network is
+          # unreachable），这里重试 3 次；用 gcc-aarch64 单包，比 clang+llvm
+          # 一整套依赖小得多，更不容易被抖动打断。
+          for i in 1 2 3; do
+            echo "=== apt 尝试 $i/3 ==="
+            if sudo apt-get update -qq && \
+               sudo apt-get install -y -qq gcc-aarch64-linux-gnu; then
+              aarch64-linux-gnu-gcc --version | head -1
+              exit 0
+            fi
+            echo "apt 失败，等待 15s 后重试..."
+            sleep 15
+          done
+          echo "apt 三次都失败"; exit 1
 
       - name: 编译 libbt-vendor.so
         run: |
@@ -46,25 +57,36 @@ jobs:
           SRC=kernel-patches/bt-shim/libbt-vendor.c
           test -f "$SRC" || { echo "缺少 $SRC"; exit 1; }
           mkdir -p out
-          # 和旧版能成功加载的 so 完全一致的编译方式：
-          # clang -nostdlib，外部符号只用 bionic 的无版本符号
-          # （open/readlink/close 之类），绝不用 dlopen/dlsym/dlerror
-          # （它们带符号版本，-nostdlib 的未定义符号无版本 → 运行时找不到）。
-          clang --target=aarch64-linux-gnu -fPIC -shared -nostdlib -Os \
-            -fuse-ld=lld \
+          # 关键：旧版能加载的 so 有一个 DT_NEEDED: libbluetooth_mtk.so，
+          # 动态链接器靠它把 libbluetooth_mtk（及其传递依赖 liblog/libdl）拉进来，
+          # 从而解析 init_uart/__android_log_print 等外部符号。
+          # v2 用 dlerror、v3 缺 NEEDED 都因此加载失败。
+          # 这里造一个空的 stub libbluetooth_mtk.so 只为了让链接器产生 NEEDED 条目
+          # （运行时系统会加载真正的那个库）。
+          mkdir -p stub
+          echo 'void __bt_stub(void){}' > stub/stub.c
+          aarch64-linux-gnu-gcc -fPIC -shared -nostdlib -o stub/libbluetooth_mtk.so stub/stub.c
+
+          aarch64-linux-gnu-gcc -fPIC -shared -nostdlib -Os \
+            -Lstub -Wl,--no-as-needed -lbluetooth_mtk \
             -o out/libbt-vendor.so "$SRC"
           echo "--- 产物 ---"
           ls -l out/libbt-vendor.so
           file out/libbt-vendor.so || true
+          echo "--- DT_NEEDED（必须含 libbluetooth_mtk.so）---"
+          aarch64-linux-gnu-readelf -d out/libbt-vendor.so 2>/dev/null | grep NEEDED || true
           echo "--- 导出的符号 ---"
-          llvm-nm -D out/libbt-vendor.so 2>/dev/null | head -10 || true
-          echo "--- 未定义符号（应从 bionic/libbluetooth_mtk 解析）---"
-          llvm-nm -D --undefined-only out/libbt-vendor.so 2>/dev/null | head -20 || true
-          echo "--- 确认没有 dlopen/dlsym/dlerror ---"
-          if llvm-nm -D --undefined-only out/libbt-vendor.so 2>/dev/null | grep -qE 'dlopen|dlsym|dlerror'; then
+          aarch64-linux-gnu-nm -D out/libbt-vendor.so 2>/dev/null | head -10 || true
+          echo "--- 未定义符号 ---"
+          aarch64-linux-gnu-nm -D --undefined-only out/libbt-vendor.so 2>/dev/null | head -20 || true
+          echo "--- 校验：无 dl* 符号 + 有 libbluetooth_mtk NEEDED ---"
+          if aarch64-linux-gnu-nm -D --undefined-only out/libbt-vendor.so 2>/dev/null | grep -qE 'dlopen|dlsym|dlerror'; then
             echo "错误：仍有 dl* 符号!"; exit 1
           fi
-          echo "OK：无 dl* 符号"
+          if ! aarch64-linux-gnu-readelf -d out/libbt-vendor.so 2>/dev/null | grep -q libbluetooth_mtk; then
+            echo "错误：缺 libbluetooth_mtk.so NEEDED!"; exit 1
+          fi
+          echo "OK：无 dl* 符号 + libbluetooth_mtk NEEDED 存在"
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
