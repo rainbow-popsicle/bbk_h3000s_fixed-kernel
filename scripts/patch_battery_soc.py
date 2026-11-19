@@ -60,12 +60,61 @@ def patch_text(src):
             return body
         new = body.replace(
             CAR_CALL_INIT,
-            "\t/* S3PRO: GET_HW_FG_CAR 返回的是状态码(0)，电量按 OCV 曲线换算 */\n"
+            "\t/* S3PRO: 读硬件库仑计做基准（返回值是状态码，数据在 gFG_columb） */\n"
             "\t\t" + read_car_line() + "\n"
-            "\t\tgFG_capacity = fgauge_read_capacity_by_v(gFG_voltage);"
+            "\t\tgFG_capacity = fgauge_read_capacity_by_v(gFG_voltage);\n"
+            "\t\ts3_car_base = gFG_columb;\n"
+            "\t\ts3_soc_base = gFG_capacity;\n"
+            "\t\tbm_print(BM_LOG_CRTI, \"[S3PRO] init: car=%d soc=%d\\n\",\n"
+            "\t\t\t s3_car_base, s3_soc_base);"
         )
         changes.append("fgauge_initialization")
         return new
+
+    HELPER = r"""
+/* S3PRO: 硬件库仑计累计电量 -------------------------------------------------
+ * fgauge_read_columb() 返回累计电荷，单位 mAh，充电为正、放电为负。
+ * GET_HW_FG_CAR 命令的返回值只是状态码，真正的数据被写进 gFG_columb。
+ * 所以这里保留那行调用当"读数据"，然后按 (car - car_base) / Qmax 累计。
+ * 起点用电压法估一次（s3_soc_base），之后只靠库仑计增量，不再查表。
+ */
+static s32 s3_car_base = 0;
+static s32 s3_soc_base = -1;
+
+static s32 s3pro_coulomb_soc(s32 car)
+{
+	s32 soc;
+	s32 qmax = gFG_BATT_CAPACITY;
+
+	if (qmax <= 0)
+		qmax = 7200;	/* S3 Pro 官方容量 */
+
+	if (s3_soc_base < 0) {
+		s3_soc_base = fgauge_read_capacity_by_v(gFG_voltage);
+		s3_car_base = car;
+	}
+
+	soc = s3_soc_base + (car - s3_car_base) * 100 / qmax;
+	if (soc > 100)
+		soc = 100;
+	if (soc < 0)
+		soc = 0;
+
+	bm_print(BM_LOG_CRTI,
+		 "[S3PRO] car=%d base=%d soc0=%d -> soc=%d qmax=%d\n",
+		 car, s3_car_base, s3_soc_base, soc, qmax);
+	return soc;
+}
+"""
+
+    # 先插入库仑累计辅助函数（必须定义在 fgauge_algo_run 之前）
+    # 注意：必须用 lambda 作替换，否则 re.sub 会把 HELPER 里的 \n 解释成换行
+    _init_re = re.compile(r"void fgauge_initialization\(void\)\s*\{")
+    if "s3pro_coulomb_soc" not in out and _init_re.search(out):
+        out = _init_re.sub(
+            lambda m: HELPER.strip() + "\n\nvoid fgauge_initialization(void)\n{",
+            out, count=1)
+        changes.append("insert s3pro_coulomb_soc")
 
     out = re.sub(r"void fgauge_initialization\(void\)\s*\{.*?\n\}", fix_init, out, flags=re.S)
 
@@ -81,9 +130,9 @@ def patch_text(src):
                 return body
             new = body.replace(
                 CAR_CALL,
-                "\t/* S3PRO: 同理，直接用上面第 2 步已算好的电压法容量 */\n"
+                "\t/* S3PRO: 读库仑计，按增量累计电量（不再查表） */\n"
                 "\t\t" + read_car_line() + "\n"
-                "\t\tgFG_capacity_by_c = gFG_capacity_by_v;"
+                "\t\tgFG_capacity_by_c = s3pro_coulomb_soc(gFG_columb);"
             )
             changes.append(fname)
             return new
@@ -270,19 +319,19 @@ def main():
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         src = f.read()
 
-    if "S3PRO: GET_HW_FG_CAR 返回的是状态码" in src:
+    if "s3pro_coulomb_soc" in src:
         print("[ok]  已打过补丁，跳过")
         return
 
     new, changes = patch_text(src)
     bad = [x for x in changes if "未找到" in x or "未匹配" in x]
-    if len(changes) != 7 or bad:
+    if len(changes) != 8 or bad:
         raise SystemExit(
-            "只匹配到 %d/7 处（%s），源码结构和预期不符，中止"
+            "只匹配到 %d/8 处（%s），源码结构和预期不符，中止"
             % (len(changes), ", ".join(changes)))
 
     if dry:
-        print("[dry] 会修改 7 处：%s" % ", ".join(changes))
+        print("[dry] 会修改 8 处：%s" % ", ".join(changes))
         return
 
     with open(path, "w", encoding="utf-8") as f:
