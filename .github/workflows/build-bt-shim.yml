@@ -34,11 +34,11 @@ jobs:
       - name: 检出源码
         uses: actions/checkout@v4
 
-      - name: 安装 64 位 ARM 交叉编译器
+      - name: 安装 clang + lld
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq gcc-aarch64-linux-gnu
-          aarch64-linux-gnu-gcc --version | head -1
+          sudo apt-get install -y -qq clang lld
+          clang --version | head -1
 
       - name: 编译 libbt-vendor.so
         run: |
@@ -46,15 +46,25 @@ jobs:
           SRC=kernel-patches/bt-shim/libbt-vendor.c
           test -f "$SRC" || { echo "缺少 $SRC"; exit 1; }
           mkdir -p out
-          aarch64-linux-gnu-gcc -fPIC -shared -nostdlib -Os \
+          # 和旧版能成功加载的 so 完全一致的编译方式：
+          # clang -nostdlib，外部符号只用 bionic 的无版本符号
+          # （open/readlink/close 之类），绝不用 dlopen/dlsym/dlerror
+          # （它们带符号版本，-nostdlib 的未定义符号无版本 → 运行时找不到）。
+          clang --target=aarch64-linux-gnu -fPIC -shared -nostdlib -Os \
+            -fuse-ld=lld \
             -o out/libbt-vendor.so "$SRC"
           echo "--- 产物 ---"
           ls -l out/libbt-vendor.so
           file out/libbt-vendor.so || true
           echo "--- 导出的符号 ---"
-          aarch64-linux-gnu-nm -D out/libbt-vendor.so 2>/dev/null | head -10 || true
+          llvm-nm -D out/libbt-vendor.so 2>/dev/null | head -10 || true
           echo "--- 未定义符号（应从 bionic/libbluetooth_mtk 解析）---"
-          aarch64-linux-gnu-nm -D --undefined-only out/libbt-vendor.so 2>/dev/null | head -20 || true
+          llvm-nm -D --undefined-only out/libbt-vendor.so 2>/dev/null | head -20 || true
+          echo "--- 确认没有 dlopen/dlsym/dlerror ---"
+          if llvm-nm -D --undefined-only out/libbt-vendor.so 2>/dev/null | grep -qE 'dlopen|dlsym|dlerror'; then
+            echo "错误：仍有 dl* 符号!"; exit 1
+          fi
+          echo "OK：无 dl* 符号"
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
