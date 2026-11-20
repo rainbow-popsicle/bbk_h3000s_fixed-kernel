@@ -7,7 +7,7 @@
 
 ---
 
-## 内核做了什么
+## 关于这个内核
 
 这棵内核是在社区 H3000S 移植树的基础上，补齐 **S3 Pro 这块板子在 Android 8.1 下跑不起来的硬件驱动**。
 
@@ -86,12 +86,8 @@ patch_sensors.py        # LIS3DH 注册 + 上报通道
 | DTS 配置 | I2C 地址 / 中断脚不对 | `patch_cm36686_dts.py` / `patch_cm36686_i2c.py` |
 | 中断 | EINT 触发方式不对，永远收不到中断 | `patch_alsps_eint.py` |
 | **驱动** | **实际硬件是 AP3220，不是 CM36686** | **`patch_alsps_ap3220.py`（根因修复）** |
-
+| **驱动 / HAL 协议** | **驱动用 EV_REL 上报 status，HAL 只认 EV_ABS，每 250ms 报一次 unknown event 丢弃数据，lux 恒 0** | **改内核 alsps.c：status/value 均改为 input_report_abs()，capability 改 EV_ABS** |
 最终确认：这块板子的光感芯片实际是 **AP3220**，与内核里写的 CM36686 不是同一颗。补丁新增了 AP3220 的驱动并关掉 CM36686 的误匹配，光感才真正开始出数。
-
-> ⚠️ 说明：内核侧光感已经能读到正确的 lux 值；但 Android 8.1 框架层的
-> `mUseSoftwareAutoBrightnessConfig=false`，系统级自动亮度策略不生效。
-> 这是框架层限制，不是内核问题。
 
 ---
 
@@ -115,8 +111,7 @@ patch_sensors.py        # LIS3DH 注册 + 上报通道
 |---|---|---|
 | **蓝牙** | ❌ 不可用 | 卡在内核 WMT 层 `mtk_wcn_wmt_func_off(WMTDRV_TYPE_BT)` 返回 FALSE，触发硬件复位死循环。需要 MT6630 芯片层资料。详见 `docs/蓝牙调查全记录.md` |
 | **视频硬解** | ❌ 不可行 | MT8173 的 vcodec 与 Android 8.1 框架层不兼容。详见 `docs/视频硬解调查全记录.md` |
-| **系统级自动亮度** | ⚠️ 框架限制 | 光感驱动已修好（能读到 lux），但 8.1 框架的自动亮度策略开关未启用 |
-
+| **屏初始化** | ❌ 不可行 | 目前尚未清楚这块屏幕的初始化方式，只能依赖lk首次初始化并关闭背光模拟熄屏效果
 ---
 
 ## Contribution
