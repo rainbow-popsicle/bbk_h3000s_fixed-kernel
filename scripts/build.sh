@@ -86,9 +86,8 @@ for s in \
     patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
     patch_disp_debug.py \
     patch_cm36686_i2c.py patch_cm36686_dts.py \
-    patch_alsps_eint.py patch_alsps_ap3220.py \
+    patch_alsps_eint.py patch_alsps_ap3220.py patch_alsps_abs.py \
     patch_vcodec_irq.py \
-    patch_bt_bluez.py \
     patch_ramdisk.py \
     bootimg.py
 do
@@ -102,7 +101,7 @@ if [ -n "$MISSING" ]; then
     printf '\033[1;31m[error] CI 是从 GitHub 仓库 checkout 的，把缺失文件推到仓库后重跑。\033[0m\n' >&2
     exit 1
 fi
-echo "  全部补丁脚本都在 ✓（共 21 个）"
+echo "  全部补丁脚本都在 ✓（共 22 个）"
 
 # --------------------------------------------------------------------------- #
 step "1/6 主机依赖（脚本版本 $BUILD_SH_VERSION）"
@@ -418,7 +417,30 @@ enable() {
 enable CONFIG_IKCONFIG
 enable CONFIG_IKCONFIG_PROC
 
+# ★ 光感核心层 + cm36686 驱动必须真的编进内核，否则对 alsps.c 的任何修改
+#   （见 scripts/patch_alsps_abs.py）都不会被编译，等于没改。
+#   为什么需要这道兜底（实机证据，2026-11-20）：
+#     · 本机 m_alsps_input 存在，且 /sys/module 下没有 alsps/cm36686 模块
+#       → 它是内建（obj-y），不是 ko；
+#     · 但仓库里的 arch/arm64/configs/h3000s_defconfig 第 234 行却是
+#           # CONFIG_CUSTOM_KERNEL_ALSPS is not set
+#       两者对不上，说明实际出包用的配置不是这份 defconfig（或曾经手工改过）。
+#       仓库副本一旦被当成基线使用，整个 ALSPS 会静默消失，光感直接没有。
+#   对已经打开的配置是幂等的；对“配置漂了”的情况是保险。
+enable CONFIG_CUSTOM_KERNEL_ALSPS
+enable CONFIG_MTK_CM36686_NEW
+
 make ARCH=arm64 HOSTCC="$HOSTCC_FIX" HOSTCFLAGS="$HOSTCFLAGS_FIX" olddefconfig
+
+# 兜底是否真的落地：olddefconfig 在符号不存在/依赖不满足时会把它丢掉，
+# 这里当场发现，而不是等编完刷机才发现光感又没了。
+if [ -f drivers/misc/mediatek/alsps/alsps.c ]; then
+    grep -q "^CONFIG_CUSTOM_KERNEL_ALSPS=y" .config \
+        || die "配置里 CONFIG_CUSTOM_KERNEL_ALSPS 没能打开 —— ALSPS 核心层不会被编译（光感消失）"
+    grep -q "^CONFIG_MTK_CM36686_NEW=y" .config \
+        || die "配置里 CONFIG_MTK_CM36686_NEW 没能打开 —— cm36686 驱动不会被编译（光感读不到数）"
+    echo "  [config] ALSPS 核心层 + cm36686 驱动已编入内核 ✓"
+fi
 
 
 # ★ 让新内核的 release 字符串和原厂一模一样。
@@ -822,6 +844,25 @@ else
     warn "scripts/patch_alsps_ap3220.py 不存在 —— 光感仍按 CM36686 解析，读不到数据"
 fi
 
+# ★ 光感上报方式：EV_REL → EV_ABS（让 HAL 真正收得到 lux）
+#   2026-11-20 实机证据（只读取证，非推测）：
+#     · m_alsps_input 的能力位是 REL=107 / ABS=101 —— bit0(REL_X)/bit8 都在 REL 里，
+#       这正是 alsps.c（EV_REL 版）的特征；若编译的是 alsps_module.c（EV_ABS 版），
+#       REL 只会是 0x6（只留 PS 的 bit1/bit2）。
+#     · 头文件里 EVENT_TYPE_ALS_STATUS 本来就写成 ABS_WHEEL，却用 input_report_rel
+#       发出去 —— 名字是 ABS 轴、实际按 REL 发，语义自己就矛盾。
+#     · 框架侧：mRecentLightSamples 一直涨（事件在流），但
+#       mAmbientLux / mLastObservedLux 恒为 0.0，sensorservice 的 LIGHT 事件全是
+#       0.00 —— 典型的「按 REL 发、按 ABS 收」，HAL 永远匹配不到事件。
+#   修法：scripts/patch_alsps_abs.py（A/B/C 三段，写法对齐树里现成的
+#   alsps_module.c：报告用 input_report_abs、能力位用 EV_ABS）。
+if [ -f "$ROOT/scripts/patch_alsps_abs.py" ]; then
+    echo "--- 把 ALSPS 光感上报从 EV_REL 改成 EV_ABS（对齐 HAL 期望）---"
+    "$PY" "$ROOT/scripts/patch_alsps_abs.py" . || die "ALSPS ABS 补丁失败"
+else
+    warn "scripts/patch_alsps_abs.py 不存在 —— 光感仍按 EV_REL 上报，HAL 收不到 lux"
+fi
+
 # ★ VPU 时钟补丁 —— 默认【关闭】
 #   假设：vdec_power_on 里所有 clk_prepare/clk_enable 被注释，VPU 无时钟。
 #   疑点：clk_summary 里 enable_count=0 是在【空闲时】测的，空闲时时钟本来就该关，
@@ -857,16 +898,21 @@ else
     warn "scripts/patch_vcodec_irq.py 不存在 —— 硬解仍会 WAIT timeout 卡死"
 fi
 
-# ★ 蓝牙：把 STP 通道切到 BlueZ/H4 模式（AOSP 8.1 的 H4Protocol 才能读懂）
-#   BT_open() 里默认 set_bluez(0) 是 MTK 私有帧，H4Protocol 解析失败会崩溃。
-#   设成 1 = 标准 H4。想要回退可设环境变量 S3PRO_BT_BLUEZ=0。
-if [ "${S3PRO_BT_BLUEZ:-1}" = "1" ]; then
+# ---- 蓝牙 bluez 补丁：已关闭（默认不执行）----
+# 背景：曾把 stp_chrdev_bt.c 的 BT_open() 里 set_bluez(0) 改成 1，想让 STP 输出
+#       标准 H4 帧给 AOSP 的 H4Protocol 读。实测 bluez=0/1 两种模式都失败，最终确认
+#       真正卡点在内核 WMT 层 mtk_wcn_wmt_func_off(BT) 返回 FALSE（触发 HW RST 死循环），
+#       与 STP 帧格式无关。详见 docs/蓝牙调查全记录.md。
+# 恢复方式：设环境变量 S3PRO_BT_BLUEZ=1 重新开启。
+if [ "${S3PRO_BT_BLUEZ:-0}" = "1" ]; then
     if [ -f "$ROOT/scripts/patch_bt_bluez.py" ]; then
         echo "--- 蓝牙 STP 切 BlueZ/H4 模式 ---"
         "$PY" "$ROOT/scripts/patch_bt_bluez.py" . || die "BT BlueZ 补丁失败"
     else
         warn "scripts/patch_bt_bluez.py 不存在 —— 蓝牙仍是 MTK 私有帧模式"
     fi
+else
+    echo "--- 蓝牙 bluez 补丁：已跳过（保持 MTK 私有帧模式 set_bluez(0)）---"
 fi
 
 # ★ 补丁生效性验证（防"脚本跑了但没改到"）
@@ -927,6 +973,17 @@ if [ -f "drivers/misc/mediatek/alsps/cm36686-new/cm36686.c" ]; then
         echo "  [verify] ALS 数据寄存器已改为 0x0C ✓"
     else
         die "头文件 ALS_DATA 未改为 0x0C（会读到 CM36686 的寄存器）"
+    fi
+    # ---- 光感上报方式必须是 EV_ABS，否则 HAL 收不到 lux ----
+    if grep -q "input_report_abs(dev, EVENT_TYPE_ALS_VALUE, value)" drivers/misc/mediatek/alsps/alsps.c; then
+        echo "  [verify] ALS 上报已改为 input_report_abs（EV_ABS）✓"
+    else
+        die "ALSPS ABS 补丁未生效（alsps.c 仍是 input_report_rel）"
+    fi
+    if grep -q "input_set_capability(dev, EV_ABS, EVENT_TYPE_ALS_VALUE)" drivers/misc/mediatek/alsps/alsps.c; then
+        echo "  [verify] ALS 能力位已改为 EV_ABS ✓"
+    else
+        die "ALS 能力位补丁未生效（alsps.c 仍是 EV_REL）"
     fi
 fi
 
