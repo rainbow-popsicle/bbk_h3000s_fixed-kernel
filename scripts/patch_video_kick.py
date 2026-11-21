@@ -69,9 +69,16 @@ static ssize_t s3pro_video_kick_write(struct file *file, const char __user *buf,
 				      size_t count, loff_t *ppos)
 {
 	unsigned int cmd = 0;
+	char cbuf[16] = {0};
+	unsigned int clen = count < sizeof(cbuf) - 1 ? count : sizeof(cbuf) - 1;
 
-	if (copy_from_user(&cmd, buf, sizeof(cmd)))
+	/* 正确解析 echo "1"/"2"/"3"（ASCII + 换行），不能把 buf 当整数读：
+	 * 直接 copy_from_user(&cmd,buf,4) 会把 "3\n" 读成 0x00000a33=2603，
+	 * 导致永远 unknown cmd。 */
+	if (copy_from_user(cbuf, buf, clen))
 		return -EFAULT;
+	if (kstrtouint(cbuf, 10, &cmd))
+		cmd = 0;
 
 	s3pro_vk_dump_state("before");
 	pr_alert("[S3PRO_VK] cmd=%u\n", cmd);

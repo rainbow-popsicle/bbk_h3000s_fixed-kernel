@@ -85,7 +85,7 @@ for s in \
     patch_lcm_stock.py patch_lcm_init.py patch_lcm_table.py \
     patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
     patch_disp_debug.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
-    patch_video_kick.py \
+    patch_video_kick.py patch_vmcmd.py \
     patch_cm36686_i2c.py patch_cm36686_dts.py \
     patch_alsps_eint.py patch_alsps_ap3220.py patch_alsps_abs.py \
     patch_vcodec_irq.py \
@@ -703,6 +703,22 @@ if [ "${VIDEO_KICK:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_video_kick.py" ]; t
     "$PY" "$ROOT/scripts/patch_video_kick.py" . || die "video_kick 诊断补丁失败"
 else
     echo "跳过 video_kick 诊断（VIDEO_KICK=${VIDEO_KICK:-0}）"
+fi
+
+
+# ★ vmcmd 诊断：清 VM_CMD_START(bit16) 悬挂，验证黑屏根因。
+#   新增 debugfs 节点 /sys/kernel/debug/s3pro_vmcmd（在 ddp_dsi.c，独立注册）：
+#     echo snap    > 节点  打印 START 各位 / INTSTA(VM_CMD_DONE) / TRIG / VMCTL_STATE
+#     echo clr     > 节点  只清 VM_CMD_START(bit16)，保留 DSI_START(bit0)
+#     echo restart > 节点  清 bit16 + 重新脉冲 bit0（照抄 DSI_Start 内部）
+#   黑屏态实测 start=0x00010001(bit16卡1) + VM_CMD_DONE=0，VIDEO_KICK 两档无效，
+#   源码确认无代码单独清 bit16 —— 本节点验证清掉它能否恢复 video 帧。
+#   不依赖 DISP_DEBUG（自己在 ddp_dsi.c 注册）；只加节点，不改显示逻辑；默认关闭。
+if [ "${VMCMD:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_vmcmd.py" ]; then
+    echo "--- 加 vmcmd 诊断节点（清 VM_CMD_START bit16）---"
+    "$PY" "$ROOT/scripts/patch_vmcmd.py" . || die "vmcmd 诊断补丁失败"
+else
+    echo "跳过 vmcmd 诊断（VMCMD=${VMCMD:-0}）"
 fi
 
 
