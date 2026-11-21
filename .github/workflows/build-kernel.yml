@@ -48,6 +48,10 @@ on:
         description: 'video_kick 诊断节点（黑屏态强制触发视频流，验证 trigger loop 死锁；依赖 DISP_DEBUG；默认关）'
         type: boolean
         default: false
+      vmcmd:
+        description: 'vmcmd 诊断节点（清 DSI_START 的 VM_CMD_START bit16 悬挂；黑屏态 echo snap/clr/restart；默认关）'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -107,6 +111,7 @@ jobs:
           LCM_POWER_SEQ: ${{ (inputs.lcm_power_seq && '1') || '0' }}
           LCM_READID: ${{ (inputs.lcm_readid && '1') || '0' }}
           VIDEO_KICK: ${{ (inputs.video_kick && '1') || '0' }}
+          VMCMD: ${{ (inputs.vmcmd && '1') || '0' }}
         run: bash scripts/build.sh
 
       - name: 上传产物
