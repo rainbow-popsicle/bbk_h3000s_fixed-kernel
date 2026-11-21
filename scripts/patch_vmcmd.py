@@ -23,8 +23,13 @@ DSI_STA=0、DSI_TRIG_STA=0、VM_CMD_DONE=0，但 D-PHY 在 HS、面板回读 0x9
   echo snap    -> pr_alert 打印 START 各位 + INTSTA(VM_CMD_DONE/VM_DONE/BUSY)
                   + TRIG_STA + VM_CMD_CON + STATE_DBG7.VMCTL_STATE
   echo clr     -> 只清 VM_CMD_START(bit16)，保留 DSI_START(bit0)
-  echo restart -> 清 bit16 + DSI_Start() 重新脉冲 bit0（更对症）
-读取节点也能拿到快照（read 走 pr_alert，同时 seq 输出）。
+  echo restart -> 清 bit16 + 重新脉冲 bit0（更对症）
+  echo inject  -> 根因验证：对待发命令的 port 恢复 VM_CMD_EN/TS_VFP_EN(低8位=0x21)
+                  + 重新脉冲 bit16，让卡在队列的亮度表真正注入发出去
+
+实测：clr/restart 能让 START 回 0x00000001 但仍黑；bit16 悬挂背后是
+VM_CMD_CON 低8位被清零(0x2c531500)、VM_CMD_DONE 永不到、INTSTA BUSY=1 卡死。
+inject 用于验证"注入使能被清零"是否根因。
 
 只加诊断节点，不改任何显示逻辑/时序。全部 pr_alert 无条件输出。
 
@@ -100,10 +105,33 @@ static ssize_t s3pro_vmcmd_write(struct file *file, const char __user *buf,
 			DSI_OUTREGBIT(NULL, DSI_START_REG, DSI_REG[i]->DSI_START,
 				      DSI_START, 1);
 		}
+	} else if (!strncmp(cmd, "inject", 6)) {
+		/* 根因验证：VM_CMD_CON 低8位(VM_CMD_EN/TS_VFP_EN)被清零，导致
+		 * VM_CMD_START=1 后无注入通道 -> VM_CMD_DONE 永不到 -> busy 卡死。
+		 * 这里把低8位恢复成 0x21(VM_CMD_EN|TS_VFP_EN)，保留高位命令数据，
+		 * 清 bit16 后重新脉冲，让 staging 的命令真正注入 VFP 发出去。 */
+		unsigned int vc;
+		pr_alert("[S3PRO_VMCMD] enable VM_CMD_EN/TS_VFP_EN + repulse\n");
+		for (i = 0; i < 2; i++) {
+			vc = INREG32(&DSI_REG[i]->DSI_VM_CMD_CON);
+			pr_alert("[S3PRO_VMCMD] dsi%d VMCMD_CON before=0x%08x\n", i, vc);
+			/* 只对"有待发命令"(高16位命令数据非0)的 port 恢复注入使能；
+			 * 保留命令数据，只把低8位控制位恢复成 0x21。
+			 * 健康态队列为空(vc 高位=0)时不动，避免破坏正常显示。 */
+			if ((vc & 0xffff0000) != 0) {
+				vc = (vc & 0xffffff00) | 0x21;
+				DSI_OUTREG32(NULL, &DSI_REG[i]->DSI_VM_CMD_CON, vc);
+				pr_alert("[S3PRO_VMCMD] dsi%d VMCMD_CON ->0x%08x\n", i, vc);
+			}
+			DSI_OUTREGBIT(NULL, DSI_START_REG, DSI_REG[i]->DSI_START,
+				      VM_CMD_START, 0);
+			DSI_OUTREGBIT(NULL, DSI_START_REG, DSI_REG[i]->DSI_START,
+				      VM_CMD_START, 1);
+		}
 	} else if (!strncmp(cmd, "snap", 4)) {
 		pr_alert("[S3PRO_VMCMD] snapshot only\n");
 	} else {
-		pr_alert("[S3PRO_VMCMD] unknown cmd (use snap/clr/restart)\n");
+		pr_alert("[S3PRO_VMCMD] unknown cmd (use snap/clr/restart/inject)\n");
 	}
 	s3pro_vmcmd_snap("after");
 	return count;
@@ -187,7 +215,8 @@ def main():
         "DSI_START 重脉冲": c.count("DSI_START, 1);") >= 1,
         "VM_CMD_DONE 快照": "DSI_REG[i]->DSI_INTSTA.VM_CMD_DONE" in c,
         "VMCTL_STATE 快照": "DSI_STATE_DBG7.VMCTL_STATE" in c,
-        "pr_alert 输出": c.count('pr_alert("[S3PRO_VMCMD]') >= 5,
+        "inject 恢复注入使能": "vc & 0xffffff00) | 0x21" in c,
+        "pr_alert 输出": c.count('pr_alert("[S3PRO_VMCMD]') >= 7,
         "花括号配平": c.count("{") == c.count("}"),
     }
     print()
