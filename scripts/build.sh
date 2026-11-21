@@ -84,7 +84,7 @@ for s in \
     patch_battery_qmax.py patch_battery_soc.py patch_battery_fgadc.py \
     patch_lcm_stock.py patch_lcm_init.py patch_lcm_table.py \
     patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
-    patch_disp_debug.py \
+    patch_disp_debug.py patch_lcm_trace.py \
     patch_cm36686_i2c.py patch_cm36686_dts.py \
     patch_alsps_eint.py patch_alsps_ap3220.py patch_alsps_abs.py \
     patch_vcodec_irq.py \
@@ -644,6 +644,18 @@ if [ "${DISP_DEBUG:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_disp_debug.py" ]; t
     "$PY" "$ROOT/scripts/patch_disp_debug.py" . || die "显示诊断补丁失败"
 else
     echo "跳过显示诊断打印（DISP_DEBUG=${DISP_DEBUG:-1}）"
+fi
+
+
+# ★ 面板推表路径诊断（研究"resume 时命令有没有发到面板"，默认关闭）
+#   在 push_table 每条命令、lcm_resume/lcm_suspend 入口插入无条件 pr_alert。
+#   pr_alert 级别 0，必进 dmesg，不受 printk 级别过滤，无需 dynamic_debug。
+#   只加日志，不改任何推表逻辑/时序/命令内容。研究完成后保持 LCM_TRACE=0。
+if [ "${LCM_TRACE:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_lcm_trace.py" ]; then
+    echo "--- 加装面板推表诊断日志（pr_alert，命令级）---"
+    "$PY" "$ROOT/scripts/patch_lcm_trace.py" . || die "面板推表诊断补丁失败"
+else
+    echo "跳过面板推表诊断日志（LCM_TRACE=${LCM_TRACE:-0}）"
 fi
 
 
