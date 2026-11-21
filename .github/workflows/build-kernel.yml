@@ -36,6 +36,10 @@ on:
         description: '面板推表诊断日志（pr_alert，查命令有没有发到面板；只加日志不改逻辑）'
         type: boolean
         default: false
+      lcm_power_seq:
+        description: '实验：反转面板 GPIO 上电顺序（先供电后复位，验证黑屏根因；默认关）'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -92,6 +96,7 @@ jobs:
           TOOLCHAIN: ${{ inputs.toolchain || 'gcc49' }}
           DRY_RUN: ${{ (inputs.dry_run && '1') || '0' }}
           LCM_TRACE: ${{ (inputs.lcm_trace && '1') || '0' }}
+          LCM_POWER_SEQ: ${{ (inputs.lcm_power_seq && '1') || '0' }}
         run: bash scripts/build.sh
 
       - name: 上传产物
