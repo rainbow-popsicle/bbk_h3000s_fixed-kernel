@@ -28,6 +28,11 @@ present_fence 持续刷 "wait VSYNC timeout on primary_rdma0_color_disp"。
   - CMDQ_DISABLE(ddp_hal.h) / debugfs.h / ddp_reg.h 均已在顶部 include
 锚点用紧随其后的 _cmdq_set_config_handle_dirty()，唯一。
 
+注意：DSI_REG 只在 ddp_dsi.c 可见，本补丁在 primary_display.c 里不能直接解引用它。
+寄存器快照（含 frmbc）改为复用 disp_debug 提供的 s3pro_dsi_regs(tag)，以
+"S3PRO_REG <tag> dsi0 D ... frmbc=..." 输出。之前直接写 DSI_REG 导致编译失败
+（'DSI_REG' undeclared），已修正。
+
 用法：
     python patch_video_kick.py <内核树根> [--dry-run]
 开关：VIDEO_KICK=1 时由 build.sh 调用；依赖 DISP_DEBUG=1。
@@ -45,13 +50,19 @@ BLOCK = r'''/* S3PRO_VIDEO_KICK: 手动强制触发视频流，验证 CMDQ trigg
  * 只加诊断节点，不改任何显示逻辑/时序。用 pr_alert 无条件输出。 */
 static struct dentry *s3pro_vk_dent;
 
+/* DSI 寄存器快照函数定义在 ddp_dsi.c（DSI_REG 只在该文件可见）。
+ * 这里不能直接在 primary_display.c 解引用 DSI_REG —— 会编译失败。
+ * 重复 extern 声明合法，保证本补丁自包含（disp_debug 已声明，这里再声明一次无妨）。 */
+extern void s3pro_dsi_regs(const char *tag);
+
 static void s3pro_vk_dump_state(const char *tag)
 {
-	pr_alert("[S3PRO_VK] %s state=%d video=%d idle=%d start=0x%08x mode=0x%08x frmbc=0x%08x\n",
+	pr_alert("[S3PRO_VK] %s state=%d video=%d idle=%d\n",
 		 tag, pgc->state, primary_display_is_video_mode(),
-		 dpmgr_path_is_idle(pgc->dpmgr_handle),
-		 INREG32(&DSI_REG[0]->DSI_START), INREG32(&DSI_REG[0]->DSI_MODE_CTRL),
-		 INREG32(&DSI_REG[0]->DSI_FRM_BC));
+		 dpmgr_path_is_idle(pgc->dpmgr_handle));
+	/* start/mode/frmbc/sta/trig 等寄存器由 s3pro_dsi_regs() 以
+	 * "S3PRO_REG <tag> dsi0 D sta=... frmbc=..." 打印，手动触发可抓到。 */
+	s3pro_dsi_regs(tag);
 }
 
 static ssize_t s3pro_video_kick_write(struct file *file, const char __user *buf,
@@ -160,7 +171,8 @@ def main():
         "stop loop 调用": "_cmdq_stop_trigger_loop();" in c,
         "start loop 调用": "_cmdq_start_trigger_loop();" in c,
         "pr_alert 输出": c.count('pr_alert("[S3PRO_VK]') >= 6,
-        "读 frmbc": "DSI_FRM_BC" in c,
+        "复用 s3pro_dsi_regs 读寄存器(含frmbc)": "s3pro_dsi_regs(tag);" in c,
+        "未直接解引用 DSI_REG(避免编译失败)": "&DSI_REG[" not in BLOCK and "DSI_REG[0]" not in BLOCK,
         "持锁保护": "_primary_path_lock(__func__);" in c and "_primary_path_unlock(__func__);" in c,
         "花括号配平": c.count("{") == c.count("}"),
     }
