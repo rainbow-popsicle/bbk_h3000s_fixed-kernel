@@ -84,7 +84,7 @@ for s in \
     patch_battery_qmax.py patch_battery_soc.py patch_battery_fgadc.py \
     patch_lcm_stock.py patch_lcm_init.py patch_lcm_table.py \
     patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
-    patch_disp_debug.py patch_lcm_trace.py patch_lcm_power_seq.py \
+    patch_disp_debug.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
     patch_cm36686_i2c.py patch_cm36686_dts.py \
     patch_alsps_eint.py patch_alsps_ap3220.py patch_alsps_abs.py \
     patch_vcodec_irq.py \
@@ -668,6 +668,22 @@ if [ "${LCM_POWER_SEQ:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_lcm_power_seq.py
     "$PY" "$ROOT/scripts/patch_lcm_power_seq.py" . || die "GPIO 时序实验补丁失败"
 else
     echo "跳过 GPIO 时序实验（LCM_POWER_SEQ=${LCM_POWER_SEQ:-0}）"
+fi
+
+
+# ★ read_id 探针：把 mtk_lcm_s3pro_readback() 链接进来，直接问面板"收到命令没"。
+#   底层 DCS 回读在 video 模式（MODE=3）下会短路 return 0，所以探针先临时
+#   切 CMD 模式（MODE=0）再回读 0x0A/0xDA/0xDB，读完切回 video。
+#   依赖：s3pro_dsi_set_mode() 由 DISP_DEBUG 补丁定义在 ddp_dsi.c，必须一起开。
+#   只加诊断函数，不改任何显示逻辑/时序；默认关闭，LCM_READID=1 开启。
+if [ "${LCM_READID:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_lcm_readid.py" ]; then
+    if [ "${DISP_DEBUG:-1}" != "1" ]; then
+        die "read_id 探针依赖 DISP_DEBUG=1（提供 s3pro_dsi_set_mode），请一起开启"
+    fi
+    echo "--- 链接 read_id 面板回读探针（切CMD回读 0x0A/0xDA/0xDB）---"
+    "$PY" "$ROOT/scripts/patch_lcm_readid.py" . || die "read_id 探针补丁失败"
+else
+    echo "跳过 read_id 探针（LCM_READID=${LCM_READID:-0}）"
 fi
 
 
