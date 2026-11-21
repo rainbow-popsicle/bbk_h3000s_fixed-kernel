@@ -32,10 +32,11 @@
  让面板先干净地进入 sleep，再停 DSI、再断电。
  原位置改为条件跳过（可用 debugfs 关掉以回归旧行为）。
 
-节点（普通 u32，默认值见注释）：
-  s3pro_skip_stop           默认 0；写 1 → 熄屏完全不拆管线（仅诊断用）
-  s3pro_reinit_on_resume    默认 0；写 1 → 唤醒后 start 之后再推一次表
-  s3pro_lcm_suspend_early   默认 1；写 0 → 回到"先停 DSI 再发 sleep"的旧顺序
+节点（普通 u32）：
+  保留：s3pro_read_id / s3pro_dsi_dump / s3pro_cmd_mode_init
+  已移除（实验结束，值固定为实测状态，逻辑不动）：
+    s3pro_skip_stop=0 / s3pro_reinit_on_resume=0 / s3pro_lcm_suspend_early=1
+    （表选择 s3pro_lcm_variant=0 在 patch_lcm_stock.py，节点也已移除）
 
 用法：
     python patch_disp_debug.py <内核树根> [--dry-run]
@@ -105,38 +106,30 @@ void s3pro_dsi_set_mode(int cmd_mode)
 
 '''
 
-NODES_FUNC = '''/* S3PRO_DBG: 运行时开关（普通 u32）
+NODES_FUNC = '''/* S3PRO_DBG: 诊断节点（普通 u32）
  *
- * s3pro_skip_stop          默认 1：熄屏时**不拆显示管线**（只关背光）。
- *                                 实测：拆掉管线后重新上电初始化面板会失败，
- *                                 寄存器层面表现为 D-PHY 停在非 HS 状态
- *                                 （hs_tx=8/ctl=2，正常应 4/16），导致永久黑屏。
- *                                 写 0 可恢复完整拆除（用于继续研究）。
- * s3pro_reinit_on_resume   默认 0：写 1 → 唤醒后 start 之后再推一次初始化表
- * s3pro_lcm_suspend_early  默认 1：面板 sleep 命令是否提前到关 DSI 之前
- *                                 写 0 → 回到旧顺序（先停 DSI 再发 sleep）
+ * 保留三个节点：read_id / dsi_dump / cmd_mode_init。
+ * 四个实验开关（skip_stop / reinit_on_resume / lcm_suspend_early /
+ * lcm_variant）实验已结束，节点已移除；其值固定为最后一次实测状态，
+ * 背后的修复逻辑保持不动。详见下方变量定义处注释。
  *
  * 本函数在 primary_display_init 里调用，所以开机后立即可用。
  */
-static u32 s3pro_skip_stop = 1;
+/* S3PRO_CLEANUP: 实验结束的开关固定为实测值，节点已移除。
+ * 保留变量是为了不改任何已验证的逻辑；如需恢复开关改本脚本即可。
+ *   skip_stop=0           完整拆卸（复现/修复黑屏的真实场景）
+ *   reinit_on_resume=0    不在 start 后重推表（实验证明无效）
+ *   lcm_suspend_early=1   sleep 命令提前到关闭 DSI 之前 */
+static u32 s3pro_skip_stop;
 static u32 s3pro_reinit_on_resume;
 static u32 s3pro_lcm_suspend_early = 1;
-static struct dentry *s3pro_skip_dent;
-static struct dentry *s3pro_reinit_dent;
-static struct dentry *s3pro_early_dent;
 static struct dentry *s3pro_readid_dent;
 static struct dentry *s3pro_dsidump_dent;
 static struct dentry *s3pro_cmdmode_dent;
-static struct dentry *s3pro_variant_dent;
 
 /* S3PRO_CMDMODE: 推表前把 DSI 切到 CMD 模式（定义在 ddp_dsi.c） */
 extern int s3pro_cmd_mode_init;
 extern void s3pro_dsi_set_mode(int cmd_mode);
-
-/* S3PRO_STOCK_LCM: 面板初始化表选择（定义在面板驱动里）
- *   1 = 表B（109 项）  0 = 表A（23 项）
- * 用 weak 引用：若驱动没打原厂重写补丁，这里链接成 0，跳过节点创建。 */
-extern int s3pro_lcm_variant __attribute__((weak));
 
 /* S3PRO_DBG: 手动触发面板 DCS 回读（用于"面板健康时"的对照测量）
  * 用法：echo 1 > /sys/kernel/debug/s3pro_read_id */
@@ -175,15 +168,12 @@ static const struct file_operations s3pro_read_id_fops = {
 
 static void s3pro_dbg_init_once(void)
 {
-	if (s3pro_skip_dent == NULL)
-		s3pro_skip_dent = debugfs_create_u32("s3pro_skip_stop", 0644,
-						     NULL, &s3pro_skip_stop);
-	if (s3pro_reinit_dent == NULL)
-		s3pro_reinit_dent = debugfs_create_u32("s3pro_reinit_on_resume", 0644,
-						       NULL, &s3pro_reinit_on_resume);
-	if (s3pro_early_dent == NULL)
-		s3pro_early_dent = debugfs_create_u32("s3pro_lcm_suspend_early", 0644,
-						      NULL, &s3pro_lcm_suspend_early);
+	/* S3PRO_CLEANUP: 只保留诊断/修复必需的节点：
+	 *   dsi_dump      手动寄存器快照
+	 *   read_id       DCS 回读（面板是否活着）
+	 *   cmd_mode_init 推表前切 CMD 模式（修复逻辑）
+	 * skip_stop / reinit_on_resume / lcm_suspend_early / lcm_variant
+	 * 四个实验开关已移除，值固定为实测状态（见上方变量定义）。 */
 	if (s3pro_dsidump_dent == NULL)
 		s3pro_dsidump_dent = debugfs_create_file("s3pro_dsi_dump", 0200,
 							 NULL, NULL, &s3pro_dsi_dump_fops);
@@ -193,9 +183,6 @@ static void s3pro_dbg_init_once(void)
 	if (s3pro_cmdmode_dent == NULL)
 		s3pro_cmdmode_dent = debugfs_create_u32("s3pro_cmd_mode_init", 0644,
 							NULL, (u32 *)&s3pro_cmd_mode_init);
-	if (&s3pro_lcm_variant != NULL && s3pro_variant_dent == NULL)
-		s3pro_variant_dent = debugfs_create_u32("s3pro_lcm_variant", 0644,
-							NULL, (u32 *)&s3pro_lcm_variant);
 }
 
 '''
@@ -400,12 +387,13 @@ def main():
         "config 快照": 's3pro_dsi_regs("config")' in d,
         "start 快照": 's3pro_dsi_regs("start")' in d,
         "stop 快照": 's3pro_dsi_regs("stop")' in d,
-        "skip_stop 节点": "s3pro_skip_stop" in p,
-        "reinit 节点": "s3pro_reinit_on_resume" in p,
-        "early_suspend 节点": "s3pro_lcm_suspend_early" in p,
-        "read_id 节点": "s3pro_read_id" in p,
-        "dsi_dump 节点": "s3pro_dsi_dump" in p,
-        "cmd_mode 节点": "s3pro_cmd_mode_init" in p,
+        "skip_stop 实验节点已移除": 'debugfs_create_u32("s3pro_skip_stop"' not in p,
+        "reinit 实验节点已移除": 'debugfs_create_u32("s3pro_reinit_on_resume"' not in p,
+        "early 实验节点已移除": 'debugfs_create_u32("s3pro_lcm_suspend_early"' not in p,
+        "variant 实验节点已移除": 'debugfs_create_u32("s3pro_lcm_variant"' not in p,
+        "read_id 节点保留": "s3pro_read_id" in p,
+        "dsi_dump 节点保留": "s3pro_dsi_dump" in p,
+        "cmd_mode 节点保留": "s3pro_cmd_mode_init" in p,
         "CMD 模式切换": "s3pro_dsi_set_mode(1)" in p,
         "节点定义在 init 之前": 0 <= nodes_at < init_at,
         "sleep 提前到关 DSI 之前": 0 <= early_at < stop_at,

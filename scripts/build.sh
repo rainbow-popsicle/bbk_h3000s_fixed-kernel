@@ -85,6 +85,7 @@ for s in \
     patch_lcm_stock.py patch_lcm_init.py patch_lcm_table.py \
     patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
     patch_disp_debug.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
+    patch_video_kick.py \
     patch_cm36686_i2c.py patch_cm36686_dts.py \
     patch_alsps_eint.py patch_alsps_ap3220.py patch_alsps_abs.py \
     patch_vcodec_irq.py \
@@ -545,7 +546,7 @@ fi
 #     * 睡眠表 5 项（含 0x53 和两段延时），原厂只有 4 项
 #     * suspend 里调 ddp_dsi_power_off、拉低所有 rails、还写本机没有的 tps65132
 #
-#   运行时切换用哪张表：echo 0/1 > /sys/kernel/debug/s3pro_lcm_variant
+#   S3PRO_CLEANUP: 表选择节点已移除，固定为实测的表A（variant=0）。
 if [ "${LCM_STOCK:-1}" = "1" ] && [ "${LCMPATCH:-1}" = "1" ] \
    && [ -f "$ROOT/scripts/patch_lcm_stock.py" ]; then
     echo "--- 按原厂实现重写面板驱动（反汇编依据）---"
@@ -684,6 +685,24 @@ if [ "${LCM_READID:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_lcm_readid.py" ]; t
     "$PY" "$ROOT/scripts/patch_lcm_readid.py" . || die "read_id 探针补丁失败"
 else
     echo "跳过 read_id 探针（LCM_READID=${LCM_READID:-0}）"
+fi
+
+
+# ★ video_kick 诊断：黑屏态手动强制触发视频流，验证 CMDQ trigger loop 死锁。
+#   新增 debugfs 节点 /sys/kernel/debug/s3pro_video_kick：
+#     echo 1 > 节点   force trigger 一帧（CPU 直写，照抄 resume）
+#     echo 2 > 节点   stop loop → force trigger → start loop（照抄 ESD recovery）
+#     echo 3 > 节点   只打印状态（含 frmbc）
+#   依赖：s3pro_dbg_init_once()（节点注册入口）由 DISP_DEBUG 补丁提供，必须一起开。
+#   只加诊断节点，不改任何显示逻辑；默认关闭，VIDEO_KICK=1 开启。
+if [ "${VIDEO_KICK:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_video_kick.py" ]; then
+    if [ "${DISP_DEBUG:-1}" != "1" ]; then
+        die "video_kick 诊断依赖 DISP_DEBUG=1（提供节点注册入口），请一起开启"
+    fi
+    echo "--- 加 video_kick 诊断节点（手动强制触发视频流）---"
+    "$PY" "$ROOT/scripts/patch_video_kick.py" . || die "video_kick 诊断补丁失败"
+else
+    echo "跳过 video_kick 诊断（VIDEO_KICK=${VIDEO_KICK:-0}）"
 fi
 
 

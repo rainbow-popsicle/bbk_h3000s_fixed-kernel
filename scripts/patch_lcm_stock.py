@@ -34,9 +34,9 @@ MARK = "S3PRO_STOCK_LCM"
 VARIANT_VAR = '''/* S3PRO_STOCK_LCM: 选择初始化表
  *   1 = 表B（109 项，原厂 variant==1 分支）
  *   0 = 表A（23 项，原厂 variant==0 分支）
- * 原厂靠读 GPIO 配置决定，这里做成运行时开关：
- *   echo 0 > /sys/kernel/debug/s3pro_lcm_variant */
-int s3pro_lcm_variant = 1;
+ * S3PRO_CLEANUP: 运行时节点已移除（表A/表B 实验均已做、都黑，无结论差异）。
+ * 固定为最后一次实测状态 0（表A），保持当前行为不变。 */
+int s3pro_lcm_variant = 0;
 
 '''
 
@@ -238,7 +238,7 @@ def main():
         "睡眠表已插入": "s3pro_sleep_table[]" in c,
         "表A 已插入": "s3pro_init_table_a[]" in c,
         "表B 已插入": "s3pro_init_table_b[]" in c,
-        "variant 变量": "int s3pro_lcm_variant = 1;" in c,
+        "variant 固定为表A(实测0)": "int s3pro_lcm_variant = 0;" in c,
         "先复位后VSP": (c.find("GPIO_LCD_RST_EN, GPIO_OUT_ONE);\n\tMDELAY(5);")
                         < c.find("GPIO_LCD_VSP_EN, GPIO_OUT_ONE);\n\tMDELAY(2);")),
         "suspend_power 已实现": "static void lcm_suspend_power(void)" in c,
