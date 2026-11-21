@@ -32,6 +32,10 @@ on:
         description: '只验证工具链/源码/配置，不编译（第一次接新树建议先跑）'
         type: boolean
         default: false
+      lcm_trace:
+        description: '面板推表诊断日志（pr_alert，查命令有没有发到面板；只加日志不改逻辑）'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -87,6 +91,7 @@ jobs:
           KERNEL_TARGET: ${{ inputs.kernel_target || 'Image' }}
           TOOLCHAIN: ${{ inputs.toolchain || 'gcc49' }}
           DRY_RUN: ${{ (inputs.dry_run && '1') || '0' }}
+          LCM_TRACE: ${{ (inputs.lcm_trace && '1') || '0' }}
         run: bash scripts/build.sh
 
       - name: 上传产物
