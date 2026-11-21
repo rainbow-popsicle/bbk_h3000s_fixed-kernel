@@ -40,6 +40,10 @@ on:
         description: '实验：反转面板 GPIO 上电顺序（先供电后复位，验证黑屏根因；默认关）'
         type: boolean
         default: false
+      lcm_readid:
+        description: 'read_id 面板回读探针（切CMD回读0x0A/ID；切模式函数由默认开启的 DISP_DEBUG 提供；默认关）'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -97,6 +101,7 @@ jobs:
           DRY_RUN: ${{ (inputs.dry_run && '1') || '0' }}
           LCM_TRACE: ${{ (inputs.lcm_trace && '1') || '0' }}
           LCM_POWER_SEQ: ${{ (inputs.lcm_power_seq && '1') || '0' }}
+          LCM_READID: ${{ (inputs.lcm_readid && '1') || '0' }}
         run: bash scripts/build.sh
 
       - name: 上传产物
