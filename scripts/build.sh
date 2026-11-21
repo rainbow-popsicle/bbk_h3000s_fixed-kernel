@@ -84,7 +84,7 @@ for s in \
     patch_battery_qmax.py patch_battery_soc.py patch_battery_fgadc.py \
     patch_lcm_stock.py patch_lcm_init.py patch_lcm_table.py \
     patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
-    patch_disp_debug.py patch_lcm_trace.py \
+    patch_disp_debug.py patch_lcm_trace.py patch_lcm_power_seq.py \
     patch_cm36686_i2c.py patch_cm36686_dts.py \
     patch_alsps_eint.py patch_alsps_ap3220.py patch_alsps_abs.py \
     patch_vcodec_irq.py \
@@ -656,6 +656,18 @@ if [ "${LCM_TRACE:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_lcm_trace.py" ]; the
     "$PY" "$ROOT/scripts/patch_lcm_trace.py" . || die "面板推表诊断补丁失败"
 else
     echo "跳过面板推表诊断日志（LCM_TRACE=${LCM_TRACE:-0}）"
+fi
+
+
+# ★ 实验：反转 lcm_resume 的 GPIO 上电顺序（默认关闭，LCM_POWER_SEQ=1 开启）
+#   把「先 RST 复位 → 再 VSP/VSN 供电」改成「先 VSP/VSN 供电 → 再 RST 复位」。
+#   验证假设：复位打在没上电的面板上 = 无效复位，导致"命令全发/寄存器健康但纯黑"。
+#   必须在 LCM_STOCK 之后运行（后者会重写 lcm_resume 整段）。仅实验用，默认 0。
+if [ "${LCM_POWER_SEQ:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_lcm_power_seq.py" ]; then
+    echo "--- 实验：反转面板 GPIO 上电顺序（先供电后复位）---"
+    "$PY" "$ROOT/scripts/patch_lcm_power_seq.py" . || die "GPIO 时序实验补丁失败"
+else
+    echo "跳过 GPIO 时序实验（LCM_POWER_SEQ=${LCM_POWER_SEQ:-0}）"
 fi
 
 
