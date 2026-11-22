@@ -84,6 +84,10 @@ on:
         description: '★LK(cappu) 时序复刻实验台：debugfs 独立切换 上电顺序/三个复位延时/RST_EN_NEW，一次刷机做受控实验（默认开）'
         type: boolean
         default: true
+      lcm_gpio_fix:
+        description: '★★★面板 GPIO 修复：驱动读 gpio_lcm_* 但设备 DT 只有 gpio_lcd_*，node/属性名两级回退 + 1V8/RST_NEW 可选（默认开，勿关）'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -154,6 +158,7 @@ jobs:
           STOCK_TIMING: ${{ (inputs.stock_timing && '1') || '0' }}
           LAB_PUSH: ${{ (inputs.lab_push && '1') || '0' }}
           LK_REPLAY: ${{ (inputs.lk_replay && '1') || '0' }}
+          LCM_GPIO_FIX: ${{ (inputs.lcm_gpio_fix && '1') || '0' }}
         run: bash scripts/build.sh
 
       - name: 上传产物
