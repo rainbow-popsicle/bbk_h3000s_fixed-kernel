@@ -27,6 +27,7 @@ PY = sys.executable
 #       后者整体替换该函数，且已自带 RST_EN_NEW 开关）。build.sh 里 RST_NEW_FIX 默认已改 0，
 #       这里同样不跑 rst_new。
 CHAIN = [
+    ("patch_lcm_gpio_fix.py", []),                         # LCM_GPIO_FIX=1（默认）
     ("patch_lcm_stock.py", ["--tables", STOCK_TABLES]),   # LCM_STOCK=1, SHARP_TABLES=0 → BOE表
     ("patch_lk_replay.py", []),                            # LK_REPLAY=1（默认）
     ("patch_stock_timing.py", []),                         # STOCK_TIMING=1
@@ -34,6 +35,7 @@ CHAIN = [
 ]
 
 EXPECT = {
+    "S3PRO_GPIO_FIX": 1,
     "S3PRO_STOCK_LCM": 1,
     "S3PRO_LKREPLAY": 1,
     "S3PRO_STOCK_TIMING": 1,
@@ -81,6 +83,23 @@ def main():
             c = code.count(mark)
             ok = (c >= n)
             print("  [%s] %-22s count=%d (需>=%d)" % ("OK" if ok else "FAIL", mark, c, n))
+            if not ok:
+                failed = True
+
+        print("\n--- ★ 面板 GPIO 修复（node/属性名两级回退）---")
+        gpio_checks = {
+            "mediatek,nt35523_fhd": "node 回退到 nt35523_fhd",
+            'GPIO_LCD_VSP_EN = of_get_named_gpio(node, "gpio_lcd_enp", 0)': "VSP ← gpio_lcd_enp",
+            'GPIO_LCD_VSN_EN = of_get_named_gpio(node, "gpio_lcd_enn", 0)': "VSN ← gpio_lcd_enn",
+            'GPIO_LCD_RST_EN = of_get_named_gpio(node, "gpio_lcd_rst", 0)': "RST ← gpio_lcd_rst",
+            "1V8 not present": "1V8 可选（regulator）",
+            "RST_NEW not present": "RST_NEW 可选",
+            "[S3PRO_GPIO] read:": "GPIO 诊断打印",
+            "[S3PRO_GPIO] req VSP": "request 结果打印",
+        }
+        for needle, label in gpio_checks.items():
+            ok = needle in code
+            print("  [%s] %-26s" % ("OK" if ok else "FAIL", label))
             if not ok:
                 failed = True
 
