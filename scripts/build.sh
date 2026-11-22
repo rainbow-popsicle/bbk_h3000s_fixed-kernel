@@ -561,21 +561,19 @@ else
     LCM_TABLE_FILE="$ROOT/kernel-patches/lcm-table/stock_tables.c"
     echo "--- 使用原厂 BOE 表（原厂能亮的那一套）---"
 fi
-# ★★★ 面板 GPIO 修复（默认开）—— 这一条可能是黑屏的真根因
-#   驱动 of_find_compatible_node(NULL,NULL,"mediatek,mt8173-lcm") 找节点，读 gpio_lcm_*；
-#   但设备 DT 的 /soc/lcm 被 h3000s.dts 合并成了 compatible="mediatek,nt35523_fhd"，
-#   属性只有 gpio_lcd_id/enp/enn/rst（pio 89/96/98/127），没有任何 gpio_lcm_*：
-#     - 全树搜 gpio_lcm_*：只在小米平板3 的 xiaomi8176_tb_c9_n.dts 里
-#     - 设备 /proc/device-tree 暴力搜：0 结果
-#   后果：node=NULL → of_get_named_gpio 全返回 -ENOENT → 赋给 unsigned int 变成
-#   4294967294 → gpio_request 失败 → goto out → lcm_resume 里所有 GPIO 操作空转。
-#   开机亮全靠 LK；kernel 重建时根本没有 GPIO 控制（这解释了为什么 15 组时序实验全无效）。
-#   本补丁：node 两级回退 + 属性名回退到 gpio_lcd_* + 1V8/RST_NEW 可选 + 打印诊断。
-if [ "${LCM_GPIO_FIX:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_lcm_gpio_fix.py" ]; then
-    echo "--- 面板 GPIO 修复（node/属性名两级回退）---"
+# ---- 面板 GPIO 修复补丁：默认关闭（已被上面的 sed 覆盖，不要重复）----
+# 上面行 ~500 处的 sed 已经完成了同样的事：
+#   "mediatek,mt8173-lcm" -> "mediatek,nt35523_fhd"
+#   gpio_lcm_1v8_en/vsp_en -> gpio_lcd_enp, gpio_lcm_vsn_en -> gpio_lcd_enn
+#   gpio_lcm_rst_en/rst_en_new -> gpio_lcd_rst
+#   goto out; -> ;   （避免第二次 request 返回 -EBUSY 时放弃整个初始化）
+# 所以 patch_lcm_gpio_fix.py 会因锚点不匹配而失败，默认不跑。
+# 如需启用（例如换了一棵没做过 sed 的树），设 LCM_GPIO_FIX=1。
+if [ "${LCM_GPIO_FIX:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_lcm_gpio_fix.py" ]; then
+    echo "--- 面板 GPIO 修复补丁（node/属性名两级回退）---"
     "$PY" "$ROOT/scripts/patch_lcm_gpio_fix.py" . || die "面板 GPIO 修复失败"
 else
-    echo "跳过面板 GPIO 修复（LCM_GPIO_FIX=${LCM_GPIO_FIX:-1}）"
+    echo "跳过面板 GPIO 修复补丁（已由前置 sed 完成；LCM_GPIO_FIX=${LCM_GPIO_FIX:-0}）"
 fi
 
 if [ "${LCM_STOCK:-1}" = "1" ] && [ "${LCMPATCH:-1}" = "1" ] \
