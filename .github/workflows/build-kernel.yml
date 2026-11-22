@@ -80,6 +80,10 @@ on:
         description: '在线重推表实验台：刷机后 echo 0x9999/0x9998/0x9997 > fb_dispparam 可在线推表，免重刷（默认关）'
         type: boolean
         default: false
+      lk_replay:
+        description: '★LK(cappu) 时序复刻实验台：debugfs 独立切换 上电顺序/三个复位延时/RST_EN_NEW，一次刷机做受控实验（默认开）'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -149,6 +153,7 @@ jobs:
           SHARP_TABLES: ${{ (inputs.sharp_tables && '1') || '0' }}
           STOCK_TIMING: ${{ (inputs.stock_timing && '1') || '0' }}
           LAB_PUSH: ${{ (inputs.lab_push && '1') || '0' }}
+          LK_REPLAY: ${{ (inputs.lk_replay && '1') || '0' }}
         run: bash scripts/build.sh
 
       - name: 上传产物
