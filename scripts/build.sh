@@ -548,11 +548,22 @@ fi
 #     * suspend 里调 ddp_dsi_power_off、拉低所有 rails、还写本机没有的 tps65132
 #
 #   S3PRO_CLEANUP: 表选择节点已移除，固定为实测的表A（variant=0）。
+#   ★2026-11-22 表来源修正：设备真实面板是夏普 WQXGA(1536x2048)，
+#     GitHub 干净树原始驱动(nt35523_wqxga_dsi_vdo_sharp)自带夏普表。
+#     patch_lcm_stock 原先塞的是 bbk 原厂 BOE FHD 表(另一块屏)→ 用错表初始化 → 黑。
+#     SHARP_TABLES=1(默认) 改用夏普原生表(sharp_tables.c)；0=回退 BOE 表做对比。
+if [ "${SHARP_TABLES:-1}" = "1" ]; then
+    LCM_TABLE_FILE="$ROOT/kernel-patches/lcm-table/sharp_tables.c"
+    echo "--- 使用夏普 WQXGA 原生初始化表（修正 BOE 表错配）---"
+else
+    LCM_TABLE_FILE="$ROOT/kernel-patches/lcm-table/stock_tables.c"
+    echo "--- 使用旧 BOE 表（对比用）---"
+fi
 if [ "${LCM_STOCK:-1}" = "1" ] && [ "${LCMPATCH:-1}" = "1" ] \
    && [ -f "$ROOT/scripts/patch_lcm_stock.py" ]; then
     echo "--- 按原厂实现重写面板驱动（反汇编依据）---"
     "$PY" "$ROOT/scripts/patch_lcm_stock.py" . \
-        --tables "$ROOT/kernel-patches/lcm-table/stock_tables.c" || die "原厂驱动重写失败"
+        --tables "$LCM_TABLE_FILE" || die "原厂驱动重写失败"
 else
     echo "跳过原厂驱动重写（LCM_STOCK=${LCM_STOCK:-1}）"
 fi
