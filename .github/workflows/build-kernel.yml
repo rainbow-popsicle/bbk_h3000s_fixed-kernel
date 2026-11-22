@@ -52,6 +52,10 @@ on:
         description: 'vmcmd 诊断节点（清 DSI_START 的 VM_CMD_START bit16 悬挂；黑屏态 echo snap/clr/restart；默认关）'
         type: boolean
         default: false
+      dsi_start_fix:
+        description: '移除 ddp_dsi_start 尾部自加的 DSI_Start()（原厂反汇编纠错 §7.11；默认开=移除）'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -112,6 +116,7 @@ jobs:
           LCM_READID: ${{ (inputs.lcm_readid && '1') || '0' }}
           VIDEO_KICK: ${{ (inputs.video_kick && '1') || '0' }}
           VMCMD: ${{ (inputs.vmcmd && '1') || '0' }}
+          DSI_START_FIX: ${{ (inputs.dsi_start_fix && '1') || '0' }}
         run: bash scripts/build.sh
 
       - name: 上传产物
