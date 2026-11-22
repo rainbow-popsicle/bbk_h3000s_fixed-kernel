@@ -24,6 +24,13 @@ s3pro_dsi_set_mode(0) 内部恢复 _dsi_context[0].dsi_params.mode（原 video m
 s3pro_dsi_set_mode 由 patch_disp_debug.py 提供（DISP_DEBUG 默认=1）。
 若 DISP_DEBUG=0，本补丁注入的 extern 会链接失败，故 build.sh 需保证二者一致。
 
+=== 锚点兼容性（2026-11-22 CI 构建失败后修正） ===
+lcm_set_disp_param 有两种实际形态，本脚本两种都支持：
+  1. stock 重写版：patch_lcm_stock.py（LCM_STOCK 默认=1，CI 走这条）生成，
+     LCM_LOGI 后无空行、结尾是 `(void)ret;` 而非 `return;`
+  2. legacy 旧版：本地历史实验树形态（LCM_LOGI 后有空行、结尾 `return;`）
+之前只支持 legacy，导致 CI 构建在"函数体匹配 0 次"中止。
+
 用法：
     python patch_dimming_cmdmode.py <内核树根> [--dry-run]
 开关：DIMMING_CMDMODE=1 时由 build.sh 调用（默认 1）。
@@ -33,8 +40,36 @@ import sys
 
 MARK = "S3PRO_DIMMING_FIX"
 
-# 目标函数：lcm_set_disp_param 的函数体（跨补丁稳定，read_id 等补丁不碰它）
-OLD_BODY = '''static void lcm_set_disp_param(unsigned int param)
+# --- 形态 1：CI 默认（patch_lcm_stock.py 重写后），见 patch_lcm_stock.py:119-126 ---
+STOCK_OLD_BODY = '''static void lcm_set_disp_param(unsigned int param)
+{
+	int ret;
+
+	LCM_LOGI("lcm_set_disp_paramt: param = %d\\n", param);
+	ret = set_panel_disp_param(param, push_table);
+	(void)ret;
+}'''
+
+STOCK_NEW_BODY = '''static void lcm_set_disp_param(unsigned int param)
+{
+	int ret;
+
+	LCM_LOGI("lcm_set_disp_paramt: param = %d\\n", param);
+
+	/* S3PRO_DIMMING_FIX: dimming(0x53/0x2C) 若在 video mode 推表会卡进
+	 * VM_CMD staging(VM_CMD_START 悬挂/DONE 不到)，面板收不到亮度控制命令
+	 * -> 唤醒后背光亮但无图像。临时切 CMD mode 走命令队列推表，推完切回。
+	 * s3pro_dsi_set_mode(0) 恢复到原 mode，不影响正常显示。 */
+	pr_alert("[S3PRO_DIM] param=0x%x switch to CMD mode\\n", param);
+	s3pro_dsi_set_mode(1);
+	ret = set_panel_disp_param(param, push_table);
+	s3pro_dsi_set_mode(0);
+	pr_alert("[S3PRO_DIM] back to video mode, ret=%d\\n", ret);
+	(void)ret;
+}'''
+
+# --- 形态 2：legacy 旧版（本地历史实验树）---
+LEGACY_OLD_BODY = '''static void lcm_set_disp_param(unsigned int param)
 {
 	int ret;
 	LCM_LOGI("lcm_set_disp_paramt: param = %d\\n", param);
@@ -43,7 +78,7 @@ OLD_BODY = '''static void lcm_set_disp_param(unsigned int param)
 	return;
 }'''
 
-NEW_BODY = '''static void lcm_set_disp_param(unsigned int param)
+LEGACY_NEW_BODY = '''static void lcm_set_disp_param(unsigned int param)
 {
 	int ret;
 	LCM_LOGI("lcm_set_disp_paramt: param = %d\\n", param);
@@ -60,7 +95,13 @@ NEW_BODY = '''static void lcm_set_disp_param(unsigned int param)
 	return;
 }'''
 
-# extern 声明插在 typedef send_cmd 之前
+# 按 CI 实际优先顺序：stock（默认）在前，legacy 兜底
+BODY_VARIANTS = [
+    ("stock重写版(CI默认)", STOCK_OLD_BODY, STOCK_NEW_BODY),
+    ("legacy旧版", LEGACY_OLD_BODY, LEGACY_NEW_BODY),
+]
+
+# extern 声明插在 typedef send_cmd 之前（stock 重写版也有该 typedef，见 patch_lcm_stock.py:116）
 EXTERN_ANCHOR = "typedef void (*send_cmd)("
 EXTERN_LINE = "extern void s3pro_dsi_set_mode(int cmd_mode);  /* S3PRO_DIMMING_FIX */\n"
 
@@ -119,11 +160,25 @@ def main():
         print("  已打过补丁，跳过")
         return 0
 
-    # 校验锚点唯一性，防止误改
-    cnt_body = t.count(OLD_BODY)
-    if cnt_body != 1:
-        print("!! lcm_set_disp_param 函数体匹配 %d 次（应为 1），中止" % cnt_body)
+    # 选择唯一匹配的形态（防误改：任何形态匹配 >1 次都中止）
+    chosen = None
+    for label, old, new in BODY_VARIANTS:
+        cnt = t.count(old)
+        if cnt == 1:
+            chosen = (label, old, new)
+            break
+        if cnt > 1:
+            print("!! %s 函数体匹配 %d 次（应为 1），中止" % (label, cnt))
+            return 1
+    if chosen is None:
+        print("!! 未匹配任何已知的 lcm_set_disp_param 形态，中止")
+        i = t.find("static void lcm_set_disp_param")
+        if i >= 0:
+            print("   实际函数体（前 400 字符）：\n" + t[i:i + 400])
         return 1
+    label, old_body, new_body = chosen
+    print("  匹配形态: %s" % label)
+
     cnt_ext = t.count(EXTERN_ANCHOR)
     if cnt_ext < 1:
         print("!! typedef send_cmd 锚点匹配 %d 次（应 >=1），中止" % cnt_ext)
@@ -136,7 +191,7 @@ def main():
         t = t.replace(EXTERN_ANCHOR, EXTERN_LINE + EXTERN_ANCHOR, 1)
         added_ext = True
 
-    t = t.replace(OLD_BODY, NEW_BODY, 1)
+    t = t.replace(old_body, new_body, 1)
     print("  已改 lcm_set_disp_param：推表包在切CMD/切回之间%s" %
           ("（含 extern 声明）" if added_ext else "（复用已存在的 extern）"))
 
@@ -149,7 +204,7 @@ def main():
     c = open(p, encoding="utf-8", errors="surrogateescape").read()
     checks = {
         "标记存在": MARK in c,
-        "原函数体已替换": OLD_BODY not in c,
+        "原函数体已替换": old_body not in c,
         "切CMD模式": "s3pro_dsi_set_mode(1);" in c,
         "切回video": "s3pro_dsi_set_mode(0);" in c,
         "推表在两者之间": c.find("s3pro_dsi_set_mode(1);") < c.find("set_panel_disp_param(param, push_table);") < c.find("s3pro_dsi_set_mode(0);"),
@@ -165,7 +220,7 @@ def main():
             bad += 1
     if bad:
         return 1
-    print("\ndimming CMD-mode 修复完成")
+    print("\ndimming CMD-mode 修复完成（形态: %s）" % label)
     return 0
 
 
