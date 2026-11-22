@@ -68,8 +68,12 @@ on:
         description: '[已证伪·可关] 补回 RST_EN_NEW(pio6397)：实测两个 RST 都是 1016 同一脚，空操作（默认关）'
         type: boolean
         default: false
+      stock_timing:
+        description: '★核心修复：DSI 时序改回原厂实测值(40/40/4/200/200)，解决熄屏唤醒黑屏（默认开，务必保持开）'
+        type: boolean
+        default: true
       sharp_tables:
-        description: '[已作废·勿开] 16:05 猜测 BOE 表错配，实测 LK 也是 BOE 表且能亮 → 换表无效（默认关）'
+        description: '[已作废·勿开] 换表方向无效，真正差异在时序参数（默认关）'
         type: boolean
         default: false
 
@@ -137,6 +141,7 @@ jobs:
           DIMMING_EARLY: ${{ (inputs.dimming_early && '1') || '0' }}
           RST_NEW_FIX: ${{ (inputs.rst_new_fix && '1') || '0' }}
           SHARP_TABLES: ${{ (inputs.sharp_tables && '1') || '0' }}
+          STOCK_TIMING: ${{ (inputs.stock_timing && '1') || '0' }}
         run: bash scripts/build.sh
 
       - name: 上传产物
