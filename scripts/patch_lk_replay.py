@@ -82,6 +82,15 @@ u32 s3pro_lk_dly3;
 u32 s3pro_lk_table;
 /* gap between the two pushes in mode 2/3, ms */
 u32 s3pro_lk_table_gap;
+/* Wait between VSN↑ and RST↑, ms. 0 = use the variant default (24ms).
+ * The reference kernel that lights this panel uses 15ms here. */
+u32 s3pro_lk_vsn_dly;
+/* How many times the init table is pushed:
+ *   0 = once (default, what this port did)
+ *   1 = twice  (what the reference kernel does: resume pushes, then init() pushes again)
+ *   2 = three times
+ */
+u32 s3pro_lk_repeat;
 
 /* Sharp native init table, copied from kernel-patches/lcm-table/sharp_tables.c
  * (Copyright 2018 XiaoMi, the panel this device actually has, wm 1536x2048).
@@ -128,6 +137,8 @@ static void s3pro_lk_dbg_init(void)
 	debugfs_create_u32("dly3", 0644, d, &s3pro_lk_dly3);
 	debugfs_create_u32("table", 0644, d, &s3pro_lk_table);
 	debugfs_create_u32("table_gap", 0644, d, &s3pro_lk_table_gap);
+	debugfs_create_u32("vsn_dly", 0644, d, &s3pro_lk_vsn_dly);
+	debugfs_create_u32("repeat", 0644, d, &s3pro_lk_repeat);
 	pr_alert("[S3PRO_LKREPLAY] debugfs ready: /sys/kernel/debug/s3pro_lk/\\n");
 }
 
@@ -135,16 +146,20 @@ static void s3pro_lk_dbg_init(void)
 
 NEW_RESUME = '''static void lcm_resume(void)
 {
-	u32 d1, d2, d3;
+	u32 d1, d2, d3, vsn_d;
+	u32 reps, gap;
 	int vsp_first;
 	int use_rst_new;
 
 	s3pro_lk_dbg_init();
 
+	vsn_d = 24;	/* default: the value this port always used */
+
 	switch (s3pro_lk_variant) {
 	case 1:  d1 = 12; d2 = 12; d3 = 32; vsp_first = 1; break;	/* original / LK full */
 	case 2:  d1 = 12; d2 = 12; d3 = 32; vsp_first = 0; break;	/* LK reset only */
 	case 3:  d1 = 20; d2 = 20; d3 = 50; vsp_first = 1; break;	/* original + longer */
+	case 4:  d1 = 5;  d2 = 2;  d3 = 15; vsp_first = 1; vsn_d = 15; break;	/* EXACT reference kernel */
 	default: d1 = 5;  d2 = 2;  d3 = 25; vsp_first = 0; break;	/* bbk stock, current */
 	}
 	if (s3pro_lk_vsp_before == 1)
@@ -157,18 +172,23 @@ NEW_RESUME = '''static void lcm_resume(void)
 		d2 = s3pro_lk_dly2;
 	if (s3pro_lk_dly3)
 		d3 = s3pro_lk_dly3;
-	use_rst_new = (s3pro_lk_rst_new != 0);
+	if (s3pro_lk_vsn_dly)
+		vsn_d = s3pro_lk_vsn_dly;
 
-	pr_alert("[S3PRO_LKREPLAY] resume var=%u vsp_first=%d rst_new=%d dly=%u/%u/%u j=%lu\\n",
-		 s3pro_lk_variant, vsp_first, use_rst_new, d1, d2, d3, jiffies);
+	use_rst_new = (s3pro_lk_rst_new != 0);
+	reps = (s3pro_lk_repeat >= 2) ? 3 : ((s3pro_lk_repeat == 1) ? 2 : 1);
+	gap = s3pro_lk_table_gap ? s3pro_lk_table_gap : 20;
+
+	pr_alert("[S3PRO_LKREPLAY] resume var=%u vsp_first=%d rst_new=%d dly=%u/%u/%u vsn_dly=%u reps=%u j=%lu\\n",
+		 s3pro_lk_variant, vsp_first, use_rst_new, d1, d2, d3, vsn_d, reps, jiffies);
 
 	if (vsp_first) {
 		lcm_set_gpio_output(GPIO_LCD_VSP_EN, GPIO_OUT_ONE);
 		pr_alert("[S3PRO_LKREPLAY] VSP=1 j=%lu\\n", jiffies);
 		MDELAY(2);
 		lcm_set_gpio_output(GPIO_LCD_VSN_EN, GPIO_OUT_ONE);
-		pr_alert("[S3PRO_LKREPLAY] VSN=1 j=%lu\\n", jiffies);
-		MDELAY(24);
+		pr_alert("[S3PRO_LKREPLAY] VSN=1 then wait %ums j=%lu\\n", vsn_d, jiffies);
+		MDELAY(vsn_d);
 	}
 
 	lcm_set_gpio_output(GPIO_LCD_RST_EN, GPIO_OUT_ONE);
@@ -199,7 +219,17 @@ NEW_RESUME = '''static void lcm_resume(void)
 	}
 
 	{
-		u32 gap = s3pro_lk_table_gap ? s3pro_lk_table_gap : 20;
+		u32 i;
+
+		/* The reference kernel pushes the init table once in resume and then
+		 * calls init(), which pushes the SAME table again. s3pro_lk_repeat
+		 * reproduces that: 0 = once, 1 = twice, 2 = three times. */
+		for (i = 0; i < reps; i++) {
+			if (i > 0) {
+				pr_alert("[S3PRO_LKREPLAY] re-push table #%u gap=%ums j=%lu\\n",
+					 i + 1, gap, jiffies);
+				MDELAY(gap);
+			}
 
 		switch (s3pro_lk_table) {
 		case 1:
@@ -254,8 +284,9 @@ NEW_RESUME = '''static void lcm_resume(void)
 				   sizeof(s3pro_init_table_a) / sizeof(struct LCM_setting_table), 1);
 			break;
 		}
+		}
 	}
-	pr_alert("[S3PRO_LKREPLAY] table done j=%lu\\n", jiffies);
+	pr_alert("[S3PRO_LKREPLAY] table done (reps=%u) j=%lu\\n", reps, jiffies);
 
 	/* NOTE: patch_dimming_early.py anchors on this exact line, keep it intact */
 	schedule_delayed_work(&open_lcm_dimming, msecs_to_jiffies(500));
@@ -414,6 +445,12 @@ def main():
         "debugfs variant 节点": 'debugfs_create_u32("variant"' in c,
         "debugfs rst_new 节点": 'debugfs_create_u32("rst_new"' in c,
         "debugfs table 节点": 'debugfs_create_u32("table"' in c,
+        "debugfs vsn_dly 节点": 'debugfs_create_u32("vsn_dly"' in c,
+        "debugfs repeat 节点": 'debugfs_create_u32("repeat"' in c,
+        "variant4 精确复刻(5/2/15)": "case 4:  d1 = 5;  d2 = 2;  d3 = 15;" in c,
+        "vsn_dly 变量生效": "MDELAY(vsn_d);" in c,
+        "二次推表循环": "re-push table #%u" in c,
+        "table done 带 reps": "table done (reps=%u)" in c,
         "BOE A→B 连发": "push BOE A (23) then BOE B (109)" in c,
         "BOE B→A 连发": "push BOE B (109) then BOE A (23)" in c,
         "sharp 表定义": "s3pro_sharp_table[]" in c,
