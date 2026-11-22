@@ -83,6 +83,7 @@ for s in \
     patch_sensors.py \
     patch_battery_qmax.py patch_battery_soc.py patch_battery_fgadc.py \
     patch_lcm_stock.py patch_lcm_init.py patch_lcm_table.py \
+    patch_lcm_gpio_fix.py \
     patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
     patch_disp_debug.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
     patch_dimming_cmdmode.py patch_dimming_early.py patch_rst_new.py patch_stock_timing.py patch_lab_push.py \
@@ -560,6 +561,23 @@ else
     LCM_TABLE_FILE="$ROOT/kernel-patches/lcm-table/stock_tables.c"
     echo "--- 使用原厂 BOE 表（原厂能亮的那一套）---"
 fi
+# ★★★ 面板 GPIO 修复（默认开）—— 这一条可能是黑屏的真根因
+#   驱动 of_find_compatible_node(NULL,NULL,"mediatek,mt8173-lcm") 找节点，读 gpio_lcm_*；
+#   但设备 DT 的 /soc/lcm 被 h3000s.dts 合并成了 compatible="mediatek,nt35523_fhd"，
+#   属性只有 gpio_lcd_id/enp/enn/rst（pio 89/96/98/127），没有任何 gpio_lcm_*：
+#     - 全树搜 gpio_lcm_*：只在小米平板3 的 xiaomi8176_tb_c9_n.dts 里
+#     - 设备 /proc/device-tree 暴力搜：0 结果
+#   后果：node=NULL → of_get_named_gpio 全返回 -ENOENT → 赋给 unsigned int 变成
+#   4294967294 → gpio_request 失败 → goto out → lcm_resume 里所有 GPIO 操作空转。
+#   开机亮全靠 LK；kernel 重建时根本没有 GPIO 控制（这解释了为什么 15 组时序实验全无效）。
+#   本补丁：node 两级回退 + 属性名回退到 gpio_lcd_* + 1V8/RST_NEW 可选 + 打印诊断。
+if [ "${LCM_GPIO_FIX:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_lcm_gpio_fix.py" ]; then
+    echo "--- 面板 GPIO 修复（node/属性名两级回退）---"
+    "$PY" "$ROOT/scripts/patch_lcm_gpio_fix.py" . || die "面板 GPIO 修复失败"
+else
+    echo "跳过面板 GPIO 修复（LCM_GPIO_FIX=${LCM_GPIO_FIX:-1}）"
+fi
+
 if [ "${LCM_STOCK:-1}" = "1" ] && [ "${LCMPATCH:-1}" = "1" ] \
    && [ -f "$ROOT/scripts/patch_lcm_stock.py" ]; then
     echo "--- 按原厂实现重写面板驱动（反汇编依据）---"
