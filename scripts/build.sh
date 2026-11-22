@@ -615,20 +615,17 @@ else
 fi
 
 
-# ★ 修复 ddp_dsi_start 缺少 DSI_Start() 的问题（熄屏唤醒后黑屏的直接原因）。
-#   实机寄存器证据（同一内核、同一设备）：
-#     开机正常:  DSI_START = 0x00000001
-#     唤醒黑屏:  DSI_START = 0x00000000
-#     其余寄存器（COM_CTRL/MODE_CTRL/PHY_LCCON/全部 timing）两边完全一致
-#   原因：ddp_dsi_start 只把 DSI_START 清零，从不置 1；
-#        开机时该位是 bootloader 留下的 1，且开机路径不调用 ddp_dsi_start，
-#        只有熄屏→唤醒才第一次真正执行 stop→start。
-#   注意：这段必须在"显示诊断打印"之前执行，这样寄存器快照打在 DSI_Start 之后。
+# ★ 移除 ddp_dsi_start 尾部【自加】的 DSI_Start()（原厂反汇编纠错，见文档 §7.11）。
+#   历史：早期据"开机 DSI_START=1 / 唤醒黑屏=0、其余寄存器一致"加过 DSI_Start()。
+#   纠错：定点反汇编原厂 3.18.35 证明 ddp_dsi_start 单/双 DSI 分支都不调 DSI_Start；
+#        原厂只在 ddp_dsi_trigger（每帧触发）里调，而我们 trigger 路径本来就有，
+#        start 里这处属于无原厂依据的重复动作 → 移除。
+#   脚本幂等：找不到标记块安全跳过；只删 start 尾部那块，不动 trigger 的 DSI_Start。
 if [ "${DSI_START_FIX:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_dsi_start.py" ]; then
-    echo "--- 修复 ddp_dsi_start 缺失的 DSI_Start() ---"
-    "$PY" "$ROOT/scripts/patch_dsi_start.py" . || die "DSI_Start 修复失败"
+    echo "--- 移除 ddp_dsi_start 自加的 DSI_Start()（对齐原厂）---"
+    "$PY" "$ROOT/scripts/patch_dsi_start.py" . || die "移除自加 DSI_Start 失败"
 else
-    echo "跳过 DSI_Start 修复（DSI_START_FIX=${DSI_START_FIX:-1}）"
+    echo "跳过移除自加 DSI_Start（DSI_START_FIX=${DSI_START_FIX:-1}）"
 fi
 
 
