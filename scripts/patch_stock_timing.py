@@ -108,14 +108,15 @@ extern char *saved_command_line;
 static u32 s3pro_tmg_from_cmdline(void)
 {
 	const char *p = saved_command_line;
+	const char *key = "s3pro_tmg=";
 	u32 v = 0;
 
 	if (!p)
 		return 0;
-	p = strstr(p, "s3pro_tmg=");
+	p = strstr(p, key);
 	if (!p)
 		return 0;
-	p += 11;
+	p += 10;	/* strlen("s3pro_tmg=") == 10, NOT 11 */
 	while (*p >= '0' && *p <= '9')
 		v = v * 10 + (u32)(*p++ - '0');
 	return v;
@@ -130,6 +131,9 @@ static void s3pro_tmg_dbg_init(void)
 		return;
 	done = 1;
 	s3pro_tmg_preset = s3pro_tmg_from_cmdline();
+	pr_alert("[S3PRO_TMG] from cmdline: preset=%u (cmdline_len=%u)\\n",
+		 s3pro_tmg_preset,
+		 (u32)(saved_command_line ? strlen(saved_command_line) : 0));
 
 	d = debugfs_create_dir("s3pro_tmg", NULL);
 	if (IS_ERR_OR_NULL(d)) {
