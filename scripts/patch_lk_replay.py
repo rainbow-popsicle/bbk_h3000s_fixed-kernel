@@ -36,6 +36,8 @@
     echo 1 > /sys/kernel/debug/s3pro_lk/rst_new      # 1=RST_EN_NEW 与主 RST 同步（cappu 第二复位脚）
     echo 1 > /sys/kernel/debug/s3pro_lk/vsp_before   # 1=强制 VSP/VSN 先；2=强制 RST 先；0=按 variant
     echo 15 > /sys/kernel/debug/s3pro_lk/dly1        # 单独覆盖 d1(ms)；0 = 用 variant 默认
+    echo 2 > /sys/kernel/debug/s3pro_lk/table        # ★0=A(23) 1=B(109) 2=A→B(LK 真实做法) 3=B→A
+    echo 20 > /sys/kernel/debug/s3pro_lk/table_gap   # 两次推表之间的间隔 ms（默认 20）
 
 判据：
     dmesg | grep S3PRO_LKREPLAY   每次 resume 打印实际参数与实际 jiffies
@@ -71,6 +73,14 @@ u32 s3pro_lk_vsp_before;
 u32 s3pro_lk_dly1;
 u32 s3pro_lk_dly2;
 u32 s3pro_lk_dly3;
+/* Table selection. NOTE: the original report says LK pushes table A then table B
+ * back-to-back (A = unlock + config + display-on, B = the rest), while this driver
+ * only ever pushes one of them. Mode 2 reproduces the LK behaviour.
+ *   0 = A only (23)  1 = B only (109)  2 = A then B (LK way)  3 = B then A
+ */
+u32 s3pro_lk_table;
+/* gap between the two pushes in mode 2/3, ms */
+u32 s3pro_lk_table_gap;
 
 static void s3pro_lk_dbg_init(void)
 {
@@ -92,6 +102,8 @@ static void s3pro_lk_dbg_init(void)
 	debugfs_create_u32("dly1", 0644, d, &s3pro_lk_dly1);
 	debugfs_create_u32("dly2", 0644, d, &s3pro_lk_dly2);
 	debugfs_create_u32("dly3", 0644, d, &s3pro_lk_dly3);
+	debugfs_create_u32("table", 0644, d, &s3pro_lk_table);
+	debugfs_create_u32("table_gap", 0644, d, &s3pro_lk_table_gap);
 	pr_alert("[S3PRO_LKREPLAY] debugfs ready: /sys/kernel/debug/s3pro_lk/\\n");
 }
 
@@ -162,16 +174,41 @@ NEW_RESUME = '''static void lcm_resume(void)
 		MDELAY(2);
 	}
 
-	if (s3pro_lcm_variant) {
-		LCM_LOGI("push init table B (109)\\n");
-		push_table(s3pro_init_table_b,
-			   sizeof(s3pro_init_table_b) / sizeof(struct LCM_setting_table), 1);
-	} else {
-		LCM_LOGI("push init table A (23)\\n");
-		push_table(s3pro_init_table_a,
-			   sizeof(s3pro_init_table_a) / sizeof(struct LCM_setting_table), 1);
+	{
+		u32 gap = s3pro_lk_table_gap ? s3pro_lk_table_gap : 20;
+
+		switch (s3pro_lk_table) {
+		case 1:
+			pr_alert("[S3PRO_LKREPLAY] push table B (109) j=%lu\\n", jiffies);
+			push_table(s3pro_init_table_b,
+				   sizeof(s3pro_init_table_b) / sizeof(struct LCM_setting_table), 1);
+			break;
+		case 2:
+			pr_alert("[S3PRO_LKREPLAY] push A (23) then B (109) gap=%ums j=%lu\\n",
+				 gap, jiffies);
+			push_table(s3pro_init_table_a,
+				   sizeof(s3pro_init_table_a) / sizeof(struct LCM_setting_table), 1);
+			MDELAY(gap);
+			push_table(s3pro_init_table_b,
+				   sizeof(s3pro_init_table_b) / sizeof(struct LCM_setting_table), 1);
+			break;
+		case 3:
+			pr_alert("[S3PRO_LKREPLAY] push B (109) then A (23) gap=%ums j=%lu\\n",
+				 gap, jiffies);
+			push_table(s3pro_init_table_b,
+				   sizeof(s3pro_init_table_b) / sizeof(struct LCM_setting_table), 1);
+			MDELAY(gap);
+			push_table(s3pro_init_table_a,
+				   sizeof(s3pro_init_table_a) / sizeof(struct LCM_setting_table), 1);
+			break;
+		default:
+			pr_alert("[S3PRO_LKREPLAY] push table A (23) j=%lu\\n", jiffies);
+			push_table(s3pro_init_table_a,
+				   sizeof(s3pro_init_table_a) / sizeof(struct LCM_setting_table), 1);
+			break;
+		}
 	}
-	pr_alert("[S3PRO_LKREPLAY] table pushed j=%lu\\n", jiffies);
+	pr_alert("[S3PRO_LKREPLAY] table done j=%lu\\n", jiffies);
 
 	/* NOTE: patch_dimming_early.py anchors on this exact line, keep it intact */
 	schedule_delayed_work(&open_lcm_dimming, msecs_to_jiffies(500));
@@ -329,6 +366,9 @@ def main():
         "变量已定义": "u32 s3pro_lk_variant;" in c,
         "debugfs variant 节点": 'debugfs_create_u32("variant"' in c,
         "debugfs rst_new 节点": 'debugfs_create_u32("rst_new"' in c,
+        "debugfs table 节点": 'debugfs_create_u32("table"' in c,
+        "A+B 连发分支": "push A (23) then B (109)" in c,
+        "B+A 连发分支": "push B (109) then A (23)" in c,
         "pr_alert 时间戳": "[S3PRO_LKREPLAY] resume" in c,
         "下游锚点保留": "schedule_delayed_work(&open_lcm_dimming, msecs_to_jiffies(500));" in c,
         "RST_EN_NEW 开关": "GPIO_LCD_RST_EN_NEW" in c,
