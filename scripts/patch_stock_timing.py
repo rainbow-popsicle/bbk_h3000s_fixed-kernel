@@ -82,13 +82,19 @@ FUNC_HEAD_NEW = '''static void lcm_get_params(LCM_PARAMS *params)
 	memset(params, 0, sizeof(LCM_PARAMS));'''
 
 # 插在 lcm_get_params 之前的全局变量与辅助函数
-PRELUDE = '''/* S3PRO_STOCK_TIMING: DSI video timing runtime switch
+PRELUDE = '''/* S3PRO_STOCK_TIMING: DSI video timing runtime/compile-time switch
  *
- *   0 = stock BOE 40/40/4/200/200 (the set LK uses to light this panel)  default
- *   1 = sharp / Mi Pad 3 8/14/2/55/55 (what the ported driver shipped)
- *   2 = custom, read from the vbp/vfp/hsync/hbp/hfp nodes
+ * IMPORTANT: lcm_get_params() is only called once when the display subsystem
+ * initialises (normally at boot). Changing the debugfs preset afterwards has NO
+ * effect until the next boot, and the variable itself resets on reboot. So the
+ * effective preset is read from the kernel cmdline at first use:
  *
- * Every lcm_get_params call pr_alert's the effective values.
+ *     s3pro_tmg=0   stock BOE 40/40/4/200/200 (default)
+ *     s3pro_tmg=1   sharp / Mi Pad 3 8/14/2/55/55
+ *     s3pro_tmg=2   custom, from the vbp/vfp/hsync/hbp/hfp nodes
+ *
+ * Add it to the boot image cmdline (scripts/set_boot_cmdline.py) and reboot.
+ * The debugfs node stays for inspection only.
  */
 u32 s3pro_tmg_preset;
 u32 s3pro_tmg_vbp;
@@ -96,6 +102,24 @@ u32 s3pro_tmg_vfp;
 u32 s3pro_tmg_hsync;
 u32 s3pro_tmg_hbp;
 u32 s3pro_tmg_hfp;
+
+extern char *saved_command_line;
+
+static u32 s3pro_tmg_from_cmdline(void)
+{
+	const char *p = saved_command_line;
+	u32 v = 0;
+
+	if (!p)
+		return 0;
+	p = strstr(p, "s3pro_tmg=");
+	if (!p)
+		return 0;
+	p += 11;
+	while (*p >= '0' && *p <= '9')
+		v = v * 10 + (u32)(*p++ - '0');
+	return v;
+}
 
 static void s3pro_tmg_dbg_init(void)
 {
@@ -105,10 +129,12 @@ static void s3pro_tmg_dbg_init(void)
 	if (done)
 		return;
 	done = 1;
+	s3pro_tmg_preset = s3pro_tmg_from_cmdline();
 
 	d = debugfs_create_dir("s3pro_tmg", NULL);
 	if (IS_ERR_OR_NULL(d)) {
-		pr_alert("[S3PRO_TMG] debugfs unavailable, using preset 0\\n");
+		pr_alert("[S3PRO_TMG] debugfs unavailable, preset=%u (from cmdline)\\n",
+			 s3pro_tmg_preset);
 		return;
 	}
 	debugfs_create_u32("preset", 0644, d, &s3pro_tmg_preset);
@@ -117,7 +143,8 @@ static void s3pro_tmg_dbg_init(void)
 	debugfs_create_u32("hsync", 0644, d, &s3pro_tmg_hsync);
 	debugfs_create_u32("hbp", 0644, d, &s3pro_tmg_hbp);
 	debugfs_create_u32("hfp", 0644, d, &s3pro_tmg_hfp);
-	pr_alert("[S3PRO_TMG] debugfs ready: /sys/kernel/debug/s3pro_tmg/\\n");
+	pr_alert("[S3PRO_TMG] debugfs ready: /sys/kernel/debug/s3pro_tmg/ preset=%u\\n",
+		 s3pro_tmg_preset);
 }
 
 static void s3pro_tmg_resolve(u32 *vbp, u32 *vfp, u32 *hsync, u32 *hbp, u32 *hfp)
