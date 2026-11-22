@@ -85,9 +85,9 @@ on:
         type: boolean
         default: true
       lcm_gpio_fix:
-        description: '★★★面板 GPIO 修复：驱动读 gpio_lcm_* 但设备 DT 只有 gpio_lcd_*，node/属性名两级回退 + 1V8/RST_NEW 可选（默认开，勿关）'
+        description: '[默认关·已由前置 sed 覆盖] 面板 GPIO 补丁：node/属性名两级回退；build.sh 里已有等价 sed，重复会因锚点不匹配而失败'
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: read
