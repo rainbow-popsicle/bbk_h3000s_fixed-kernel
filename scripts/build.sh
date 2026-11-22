@@ -85,7 +85,7 @@ for s in \
     patch_lcm_stock.py patch_lcm_init.py patch_lcm_table.py \
     patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
     patch_disp_debug.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
-    patch_dimming_cmdmode.py patch_dimming_early.py patch_rst_new.py \
+    patch_dimming_cmdmode.py patch_dimming_early.py patch_rst_new.py patch_stock_timing.py \
     patch_video_kick.py patch_vmcmd.py \
     patch_cm36686_i2c.py patch_cm36686_dts.py \
     patch_alsps_eint.py patch_alsps_ap3220.py patch_alsps_abs.py \
@@ -548,16 +548,16 @@ fi
 #     * suspend 里调 ddp_dsi_power_off、拉低所有 rails、还写本机没有的 tps65132
 #
 #   S3PRO_CLEANUP: 表选择节点已移除，固定为实测的表A（variant=0）。
-#   ★2026-11-22 表来源修正：设备真实面板是夏普 WQXGA(1536x2048)，
-#     GitHub 干净树原始驱动(nt35523_wqxga_dsi_vdo_sharp)自带夏普表。
-#     patch_lcm_stock 原先塞的是 bbk 原厂 BOE FHD 表(另一块屏)→ 用错表初始化 → 黑。
-#     SHARP_TABLES=1(默认) 改用夏普原生表(sharp_tables.c)；0=回退 BOE 表做对比。
-if [ "${SHARP_TABLES:-1}" = "1" ]; then
+#   ★2026-11-22 表来源：反汇编原厂 lcm_get_params 证实原厂屏=1536x2048，
+#     原厂 LK 用 BOE 表(23项)能亮。16:05"BOE表错配"和 16:26"分辨率错配"均已自我推翻。
+#     真正差异在时序参数(见 patch_stock_timing.py)，不在表。
+#     SHARP_TABLES 默认 0 = 用原厂 BOE 表(能亮的那一套)；1=夏普表(实验用,已作废方向)。
+if [ "${SHARP_TABLES:-0}" = "1" ]; then
     LCM_TABLE_FILE="$ROOT/kernel-patches/lcm-table/sharp_tables.c"
-    echo "--- 使用夏普 WQXGA 原生初始化表（修正 BOE 表错配）---"
+    echo "--- 使用夏普表（实验方向，已作废）---"
 else
     LCM_TABLE_FILE="$ROOT/kernel-patches/lcm-table/stock_tables.c"
-    echo "--- 使用旧 BOE 表（对比用）---"
+    echo "--- 使用原厂 BOE 表（原厂能亮的那一套）---"
 fi
 if [ "${LCM_STOCK:-1}" = "1" ] && [ "${LCMPATCH:-1}" = "1" ] \
    && [ -f "$ROOT/scripts/patch_lcm_stock.py" ]; then
@@ -566,6 +566,20 @@ if [ "${LCM_STOCK:-1}" = "1" ] && [ "${LCMPATCH:-1}" = "1" ] \
         --tables "$LCM_TABLE_FILE" || die "原厂驱动重写失败"
 else
     echo "跳过原厂驱动重写（LCM_STOCK=${LCM_STOCK:-1}）"
+fi
+
+
+# ★★ 核心修复：DSI 时序参数改为原厂 3.18.35 实测值（默认开）。
+#   反汇编原厂 lcm_get_params @0x458f40，用 LANE_NUM=4 锚点反推 DSI 起始 0x1d4，
+#   得到原厂时序 v_bp=40/v_fp=40/h_sync=4/h_bp=200/h_fp=200；
+#   而移植驱动(小米平板3)用 8/14/2/55/55 —— H/V blanking 不匹配 → 熄屏唤醒黑屏。
+#   开机能亮是 LK 用原厂时序初始化的；kernel 重建用错时序就黑。
+#   必须在 LCM_STOCK 之后运行（get_params 不在 stock 重写区间，锚点保留，已实测）。
+if [ "${STOCK_TIMING:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_stock_timing.py" ]; then
+    echo "--- 核心修复：DSI 时序改回原厂值（40/40/4/200/200）---"
+    "$PY" "$ROOT/scripts/patch_stock_timing.py" . || die "原厂时序修复失败"
+else
+    echo "跳过原厂时序修复（STOCK_TIMING=${STOCK_TIMING:-1}）"
 fi
 
 
