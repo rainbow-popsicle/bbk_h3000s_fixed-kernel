@@ -116,6 +116,12 @@ def main():
             "push BOE A (23) then BOE B (109)": "BOE A→B 连发",
             'debugfs_create_u32("table"': "debugfs table 节点",
             'debugfs_create_u32("table_gap"': "debugfs table_gap 节点",
+            'debugfs_create_u32("vsn_dly"': "debugfs vsn_dly 节点",
+            'debugfs_create_u32("repeat"': "debugfs repeat 节点",
+            "case 4:  d1 = 5;  d2 = 2;  d3 = 15;": "variant4 精确复刻 5/2/15",
+            "MDELAY(vsn_d);": "vsn_dly 变量生效",
+            "re-push table #%u": "二次推表循环",
+            "table done (reps=%u)": "table done 带 reps",
         }
         for needle, label in table_checks.items():
             ok = needle in code
