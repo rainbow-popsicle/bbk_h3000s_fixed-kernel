@@ -85,7 +85,7 @@ for s in \
     patch_lcm_stock.py patch_lcm_init.py patch_lcm_table.py \
     patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
     patch_disp_debug.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
-    patch_dimming_cmdmode.py \
+    patch_dimming_cmdmode.py patch_dimming_early.py \
     patch_video_kick.py patch_vmcmd.py \
     patch_cm36686_i2c.py patch_cm36686_dts.py \
     patch_alsps_eint.py patch_alsps_ap3220.py patch_alsps_abs.py \
@@ -686,20 +686,42 @@ else
 fi
 
 
-# ★ 根因修复：dimming(0x53/0x2C) 改在 CMD mode 下推表（默认开）。
-#   唤醒后 open_lcm_dimming 延时工作(500ms)在 video mode 推 {0x53,1,{0x2C}}，
-#   命令卡进 VM_CMD staging(0x2c531521, VM_CMD_START 悬挂/DONE 不到)，
-#   面板亮度控制寄存器没写入 -> 背光亮但无图像（实测根因，见报告 §12:20）。
-#   修复：把 set_panel_disp_param 推表包在 s3pro_dsi_set_mode(1)/(0) 之间，
-#   与 read_id 探针同一手法。依赖 s3pro_dsi_set_mode()（DISP_DEBUG=1 提供）。
-if [ "${DIMMING_CMDMODE:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_dimming_cmdmode.py" ]; then
-    if [ "${DISP_DEBUG:-1}" != "1" ]; then
-        die "dimming CMD-mode 修复依赖 DISP_DEBUG=1（提供 s3pro_dsi_set_mode），请一起开启"
+# ★【默认修复·CMDQ-safe】dimming(0x53/0x2C) 前移到 lcm_resume 内同步推表。
+#   唤醒后 lcm_resume 末尾 schedule 的 500ms 延时工作在 video mode(MODE=3) 推表，
+#   命令卡进 VM_CMD staging(0x2c531521, VM_CMD_START 悬挂/DONE 不到)
+#   → 面板 0x53 未写入 → 背光亮但物理纯黑（实测根因，见报告 §12:20）。
+#   lcm_resume 执行时 MODE 仍是 0(CMD)，切换 video 发生在其后的 dpmgr_path_start。
+#   把 dimming 同步前移到此处走正常命令队列，不切 MODE、不碰 CMDQ。
+#   必须在 LCM_STOCK 之后运行（后者重写 lcm_resume）。与 DIMMING_CMDMODE 互斥。
+if [ "${DIMMING_EARLY:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_dimming_early.py" ]; then
+    if [ "${DIMMING_CMDMODE:-0}" = "1" ]; then
+        die "DIMMING_EARLY 与 DIMMING_CMDMODE 互斥，且后者已证伪（CPU 裸写 MODE 触发 CMDQ 风暴）；请关闭 dimming_cmdmode"
     fi
-    echo "--- 根因修复：dimming 推表切 CMD mode（绕开 VM_CMD 卡死）---"
+    if [ "${LCM_STOCK:-1}" != "1" ]; then
+        die "dimming early 修复需要 LCM_STOCK=1（lcm_resume 锚点由原厂重写脚本生成）"
+    fi
+    echo "--- 根因修复：dimming 前移到 lcm_resume 同步推表（CMDQ-safe）---"
+    "$PY" "$ROOT/scripts/patch_dimming_early.py" . || die "dimming early 修复失败"
+else
+    echo "跳过 dimming early 修复（DIMMING_EARLY=${DIMMING_EARLY:-1}）"
+fi
+
+
+# ★【已证伪·保留供回退对比，默认关】dimming 推表切 CMD mode（CPU 裸写 MODE）。
+#   旧方案能清掉 VM_CMD 卡死，但 s3pro_dsi_set_mode 内部 CPU 裸写 MODE 破坏
+#   CMDQ 同步 → 实测 78+ 次 CMDQ SW timeout（WDMA0_SOF/MUTEX0_STREAM_EOF），
+#   回退后风暴消失 → 因果坐实，不再作为修复使用。默认 0，勿与 DIMMING_EARLY 同开。
+if [ "${DIMMING_CMDMODE:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_dimming_cmdmode.py" ]; then
+    if [ "${DISP_DEBUG:-1}" != "1" ]; then
+        die "dimming CMD-mode（已证伪）依赖 DISP_DEBUG=1（提供 s3pro_dsi_set_mode），请一起开启"
+    fi
+    if [ "${DIMMING_EARLY:-1}" = "1" ]; then
+        die "dimming CMD-mode（已证伪）与 DIMMING_EARLY 互斥，请先关闭 dimming_early"
+    fi
+    echo "--- [已证伪实验] dimming 推表切 CMD mode（CPU 裸写，仅供回退对比）---"
     "$PY" "$ROOT/scripts/patch_dimming_cmdmode.py" . || die "dimming CMD-mode 修复失败"
 else
-    echo "跳过 dimming CMD-mode 修复（DIMMING_CMDMODE=${DIMMING_CMDMODE:-1}）"
+    echo "跳过 dimming CMD-mode（已证伪，DIMMING_CMDMODE=${DIMMING_CMDMODE:-0}）"
 fi
 
 
