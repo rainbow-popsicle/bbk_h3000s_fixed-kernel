@@ -23,24 +23,44 @@ SCRIPTS = os.path.join(ROOT, "scripts")
 PY = sys.executable
 
 # build.sh 默认开关下的面板补丁调用顺序（行号见 build.sh）
-# 注意：patch_rst_new.py 与 patch_lk_replay.py 互斥（前者锚点是 stock 版 lcm_resume 原文，
-#       后者整体替换该函数，且已自带 RST_EN_NEW 开关）。build.sh 里 RST_NEW_FIX 默认已改 0，
-#       这里同样不跑 rst_new。
+# 注意：
+#   1) patch_rst_new.py 与 patch_lk_replay.py 互斥（前者锚点是 stock 版 lcm_resume 原文，
+#      后者整体替换该函数，且已自带 RST_EN_NEW 开关）。build.sh 里 RST_NEW_FIX 默认已改 0。
+#   2) patch_lcm_gpio_fix.py 默认关 —— build.sh 里在它之前已用 sed 把
+#      "mediatek,mt8173-lcm"→"mediatek,nt35523_fhd"、gpio_lcm_*→gpio_lcd_*、goto out;→; 改完。
+#      所以这里先用 SED_LINES 模拟那段 sed，再跑补丁链。
 CHAIN = [
-    ("patch_lcm_gpio_fix.py", []),                         # LCM_GPIO_FIX=1（默认）
     ("patch_lcm_stock.py", ["--tables", STOCK_TABLES]),   # LCM_STOCK=1, SHARP_TABLES=0 → BOE表
     ("patch_lk_replay.py", []),                            # LK_REPLAY=1（默认）
     ("patch_stock_timing.py", []),                         # STOCK_TIMING=1
     ("patch_dimming_early.py", []),                        # DIMMING_EARLY=1
 ]
 
+# 与 build.sh 里那段 sed 完全一致（顺序也一致：先 rst_en_new 再 rst_en）
+SED_LINES = [
+    ('"mediatek,mt8173-lcm"', '"mediatek,nt35523_fhd"'),
+    ("gpio_lcm_rst_en_new", "gpio_lcd_rst"),
+    ("gpio_lcm_rst_en", "gpio_lcd_rst"),
+    ("gpio_lcm_vsp_en", "gpio_lcd_enp"),
+    ("gpio_lcm_vsn_en", "gpio_lcd_enn"),
+    ("gpio_lcm_1v8_en", "gpio_lcd_enp"),
+    ("goto out;", ";"),
+]
+
 EXPECT = {
-    "S3PRO_GPIO_FIX": 1,
     "S3PRO_STOCK_LCM": 1,
     "S3PRO_LKREPLAY": 1,
     "S3PRO_STOCK_TIMING": 1,
     "S3PRO_DIM_EARLY": 3,
 }
+
+
+def apply_sed(path):
+    """模拟 build.sh 里对驱动做的那段 sed。"""
+    t = open(path, encoding="utf-8", errors="surrogateescape").read()
+    for old, new in SED_LINES:
+        t = t.replace(old, new)
+    open(path, "w", encoding="utf-8", errors="surrogateescape", newline="").write(t)
 
 
 def main():
@@ -58,7 +78,9 @@ def main():
     os.makedirs(drv_dir)
     drv = os.path.join(drv_dir, "nt35523_wqxga_dsi_vdo_sharp.c")
     shutil.copy2(SRC_DRIVER, drv)
+    apply_sed(drv)          # 模拟 build.sh 里对驱动做的那段 sed
     print("工作目录: %s" % tmp)
+    print("已模拟 build.sh 的 GPIO sed（mt8173-lcm→nt35523_fhd、gpio_lcm_*→gpio_lcd_*、goto out;→;）")
 
     failed = False
 
@@ -86,17 +108,24 @@ def main():
             if not ok:
                 failed = True
 
-        print("\n--- ★ 面板 GPIO 修复（node/属性名两级回退）---")
+        print("\n--- ★ 面板 GPIO（build.sh 的 sed 已改好 node/属性名）---")
         gpio_checks = {
-            "mediatek,nt35523_fhd": "node 回退到 nt35523_fhd",
-            'GPIO_LCD_VSP_EN = of_get_named_gpio(node, "gpio_lcd_enp", 0)': "VSP ← gpio_lcd_enp",
-            'GPIO_LCD_VSN_EN = of_get_named_gpio(node, "gpio_lcd_enn", 0)': "VSN ← gpio_lcd_enn",
-            'GPIO_LCD_RST_EN = of_get_named_gpio(node, "gpio_lcd_rst", 0)': "RST ← gpio_lcd_rst",
-            "1V8 not present": "1V8 可选（regulator）",
-            "RST_NEW not present": "RST_NEW 可选",
-            "[S3PRO_GPIO] read:": "GPIO 诊断打印",
-            "[S3PRO_GPIO] req VSP": "request 结果打印",
+            '"mediatek,nt35523_fhd"': "node 是 nt35523_fhd",
+            'of_get_named_gpio(node, "gpio_lcd_enp", 0)': "读 gpio_lcd_enp(VSP/1V8)",
+            'of_get_named_gpio(node, "gpio_lcd_enn", 0)': "读 gpio_lcd_enn(VSN)",
+            'of_get_named_gpio(node, "gpio_lcd_rst", 0)': "读 gpio_lcd_rst(RST)",
+            "gpio_lcm_": "旧 gpio_lcm_* 已清除",
+            "goto out;": "goto out 已去掉（不再因 EBUSY 放弃）",
         }
+        for needle, label in gpio_checks.items():
+            if label.startswith("旧 ") or label.startswith("goto"):
+                ok = needle not in code
+            else:
+                ok = needle in code
+            print("  [%s] %-28s" % ("OK" if ok else "FAIL", label))
+            if not ok:
+                failed = True
+        gpio_checks = {}
         for needle, label in gpio_checks.items():
             ok = needle in code
             print("  [%s] %-26s" % ("OK" if ok else "FAIL", label))
