@@ -85,6 +85,7 @@ for s in \
     patch_lcm_stock.py patch_lcm_init.py patch_lcm_table.py \
     patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
     patch_disp_debug.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
+    patch_dimming_cmdmode.py \
     patch_video_kick.py patch_vmcmd.py \
     patch_cm36686_i2c.py patch_cm36686_dts.py \
     patch_alsps_eint.py patch_alsps_ap3220.py patch_alsps_abs.py \
@@ -682,6 +683,23 @@ if [ "${LCM_READID:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_lcm_readid.py" ]; t
     "$PY" "$ROOT/scripts/patch_lcm_readid.py" . || die "read_id 探针补丁失败"
 else
     echo "跳过 read_id 探针（LCM_READID=${LCM_READID:-0}）"
+fi
+
+
+# ★ 根因修复：dimming(0x53/0x2C) 改在 CMD mode 下推表（默认开）。
+#   唤醒后 open_lcm_dimming 延时工作(500ms)在 video mode 推 {0x53,1,{0x2C}}，
+#   命令卡进 VM_CMD staging(0x2c531521, VM_CMD_START 悬挂/DONE 不到)，
+#   面板亮度控制寄存器没写入 -> 背光亮但无图像（实测根因，见报告 §12:20）。
+#   修复：把 set_panel_disp_param 推表包在 s3pro_dsi_set_mode(1)/(0) 之间，
+#   与 read_id 探针同一手法。依赖 s3pro_dsi_set_mode()（DISP_DEBUG=1 提供）。
+if [ "${DIMMING_CMDMODE:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_dimming_cmdmode.py" ]; then
+    if [ "${DISP_DEBUG:-1}" != "1" ]; then
+        die "dimming CMD-mode 修复依赖 DISP_DEBUG=1（提供 s3pro_dsi_set_mode），请一起开启"
+    fi
+    echo "--- 根因修复：dimming 推表切 CMD mode（绕开 VM_CMD 卡死）---"
+    "$PY" "$ROOT/scripts/patch_dimming_cmdmode.py" . || die "dimming CMD-mode 修复失败"
+else
+    echo "跳过 dimming CMD-mode 修复（DIMMING_CMDMODE=${DIMMING_CMDMODE:-1}）"
 fi
 
 
