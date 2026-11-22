@@ -36,7 +36,8 @@
     echo 1 > /sys/kernel/debug/s3pro_lk/rst_new      # 1=RST_EN_NEW 与主 RST 同步（cappu 第二复位脚）
     echo 1 > /sys/kernel/debug/s3pro_lk/vsp_before   # 1=强制 VSP/VSN 先；2=强制 RST 先；0=按 variant
     echo 15 > /sys/kernel/debug/s3pro_lk/dly1        # 单独覆盖 d1(ms)；0 = 用 variant 默认
-    echo 2 > /sys/kernel/debug/s3pro_lk/table        # ★0=A(23) 1=B(109) 2=A→B(LK 真实做法) 3=B→A
+    echo 2 > /sys/kernel/debug/s3pro_lk/table        # ★0=BOE A(23) 1=BOE B(109) 2=BOE A→B(LK) 3=BOE B→A
+                                                     #  4=SHARP(12) 5=SHARP→BOE A 6=BOE A→SHARP
     echo 20 > /sys/kernel/debug/s3pro_lk/table_gap   # 两次推表之间的间隔 ms（默认 20）
 
 判据：
@@ -81,6 +82,29 @@ u32 s3pro_lk_dly3;
 u32 s3pro_lk_table;
 /* gap between the two pushes in mode 2/3, ms */
 u32 s3pro_lk_table_gap;
+
+/* Sharp native init table, copied from kernel-patches/lcm-table/sharp_tables.c
+ * (Copyright 2018 XiaoMi, the panel this device actually has, wm 1536x2048).
+ *
+ * It is COMPLETELY DIFFERENT from the BOE table (23 items, starts with the
+ * 0xFF AA55A580 unlock). Sharp is 12 items, no 0xFF unlock, and uses
+ *   0xCE{F0,1F} / 0xCE{06} / 0xD7{00,2F} / 0x51{FF} / 0x55{02} / 0x53{24}
+ * instead. Keeping both compiled in lets us cross table x timing at runtime.
+ */
+static struct LCM_setting_table s3pro_sharp_table[] = {
+	{0x11, 0, {} },
+	{REGFLAG_DELAY, 120, {} },
+	{0xF0, 5, {0x55, 0xAA, 0x52, 0x08, 0x05} },
+	{0xCE, 2, {0xF0, 0x1F} },
+	{0xF0, 5, {0x55, 0xAA, 0x52, 0x08, 0x01} },
+	{0xCE, 1, {0x06} },
+	{0xD7, 2, {0x00, 0x2F} },
+	{0x51, 1, {0xFF} },
+	{0x55, 1, {0x02} },
+	{0x53, 1, {0x24} },
+	{0x29, 0, {} },
+	{REGFLAG_END_OF_TABLE, 0x00, {} },
+};
 
 static void s3pro_lk_dbg_init(void)
 {
@@ -179,12 +203,12 @@ NEW_RESUME = '''static void lcm_resume(void)
 
 		switch (s3pro_lk_table) {
 		case 1:
-			pr_alert("[S3PRO_LKREPLAY] push table B (109) j=%lu\\n", jiffies);
+			pr_alert("[S3PRO_LKREPLAY] push BOE table B (109) j=%lu\\n", jiffies);
 			push_table(s3pro_init_table_b,
 				   sizeof(s3pro_init_table_b) / sizeof(struct LCM_setting_table), 1);
 			break;
 		case 2:
-			pr_alert("[S3PRO_LKREPLAY] push A (23) then B (109) gap=%ums j=%lu\\n",
+			pr_alert("[S3PRO_LKREPLAY] push BOE A (23) then BOE B (109) gap=%ums j=%lu\\n",
 				 gap, jiffies);
 			push_table(s3pro_init_table_a,
 				   sizeof(s3pro_init_table_a) / sizeof(struct LCM_setting_table), 1);
@@ -193,7 +217,7 @@ NEW_RESUME = '''static void lcm_resume(void)
 				   sizeof(s3pro_init_table_b) / sizeof(struct LCM_setting_table), 1);
 			break;
 		case 3:
-			pr_alert("[S3PRO_LKREPLAY] push B (109) then A (23) gap=%ums j=%lu\\n",
+			pr_alert("[S3PRO_LKREPLAY] push BOE B (109) then BOE A (23) gap=%ums j=%lu\\n",
 				 gap, jiffies);
 			push_table(s3pro_init_table_b,
 				   sizeof(s3pro_init_table_b) / sizeof(struct LCM_setting_table), 1);
@@ -201,8 +225,31 @@ NEW_RESUME = '''static void lcm_resume(void)
 			push_table(s3pro_init_table_a,
 				   sizeof(s3pro_init_table_a) / sizeof(struct LCM_setting_table), 1);
 			break;
+		case 4:
+			pr_alert("[S3PRO_LKREPLAY] push SHARP table (12) j=%lu\\n", jiffies);
+			push_table(s3pro_sharp_table,
+				   sizeof(s3pro_sharp_table) / sizeof(struct LCM_setting_table), 1);
+			break;
+		case 5:
+			pr_alert("[S3PRO_LKREPLAY] push SHARP (12) then BOE A (23) gap=%ums j=%lu\\n",
+				 gap, jiffies);
+			push_table(s3pro_sharp_table,
+				   sizeof(s3pro_sharp_table) / sizeof(struct LCM_setting_table), 1);
+			MDELAY(gap);
+			push_table(s3pro_init_table_a,
+				   sizeof(s3pro_init_table_a) / sizeof(struct LCM_setting_table), 1);
+			break;
+		case 6:
+			pr_alert("[S3PRO_LKREPLAY] push BOE A (23) then SHARP (12) gap=%ums j=%lu\\n",
+				 gap, jiffies);
+			push_table(s3pro_init_table_a,
+				   sizeof(s3pro_init_table_a) / sizeof(struct LCM_setting_table), 1);
+			MDELAY(gap);
+			push_table(s3pro_sharp_table,
+				   sizeof(s3pro_sharp_table) / sizeof(struct LCM_setting_table), 1);
+			break;
 		default:
-			pr_alert("[S3PRO_LKREPLAY] push table A (23) j=%lu\\n", jiffies);
+			pr_alert("[S3PRO_LKREPLAY] push BOE table A (23) j=%lu\\n", jiffies);
 			push_table(s3pro_init_table_a,
 				   sizeof(s3pro_init_table_a) / sizeof(struct LCM_setting_table), 1);
 			break;
@@ -367,8 +414,13 @@ def main():
         "debugfs variant 节点": 'debugfs_create_u32("variant"' in c,
         "debugfs rst_new 节点": 'debugfs_create_u32("rst_new"' in c,
         "debugfs table 节点": 'debugfs_create_u32("table"' in c,
-        "A+B 连发分支": "push A (23) then B (109)" in c,
-        "B+A 连发分支": "push B (109) then A (23)" in c,
+        "BOE A→B 连发": "push BOE A (23) then BOE B (109)" in c,
+        "BOE B→A 连发": "push BOE B (109) then BOE A (23)" in c,
+        "sharp 表定义": "s3pro_sharp_table[]" in c,
+        "sharp 表特征 0xCE": "0xCE, 2, {0xF0, 0x1F}" in c,
+        "sharp 表分支": "push SHARP table (12)" in c,
+        "sharp+BOE 组合": "push SHARP (12) then BOE A (23)" in c,
+        "BOE+sharp 组合": "push BOE A (23) then SHARP (12)" in c,
         "pr_alert 时间戳": "[S3PRO_LKREPLAY] resume" in c,
         "下游锚点保留": "schedule_delayed_work(&open_lcm_dimming, msecs_to_jiffies(500));" in c,
         "RST_EN_NEW 开关": "GPIO_LCD_RST_EN_NEW" in c,
