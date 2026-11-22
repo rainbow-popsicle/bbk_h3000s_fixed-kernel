@@ -85,7 +85,7 @@ for s in \
     patch_lcm_stock.py patch_lcm_init.py patch_lcm_table.py \
     patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
     patch_disp_debug.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
-    patch_dimming_cmdmode.py patch_dimming_early.py patch_rst_new.py patch_stock_timing.py \
+    patch_dimming_cmdmode.py patch_dimming_early.py patch_rst_new.py patch_stock_timing.py patch_lab_push.py \
     patch_video_kick.py patch_vmcmd.py \
     patch_cm36686_i2c.py patch_cm36686_dts.py \
     patch_alsps_eint.py patch_alsps_ap3220.py patch_alsps_abs.py \
@@ -764,6 +764,23 @@ if [ "${DIMMING_CMDMODE:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_dimming_cmdmod
     "$PY" "$ROOT/scripts/patch_dimming_cmdmode.py" . || die "dimming CMD-mode 修复失败"
 else
     echo "跳过 dimming CMD-mode（已证伪，DIMMING_CMDMODE=${DIMMING_CMDMODE:-0}）"
+fi
+
+
+# ★ 在线重推表实验台（实验用，默认关）。
+#   复用现成 fb_dispparam 节点，拦截特殊 param 在线重推表，无需重新刷机：
+#     echo 0x9999 > /sys/class/graphics/fb0/fb_dispparam  → 重推当前 init 表
+#     echo 0x9998 > ... → 推睡眠表（对照）
+#     echo 0x9997 > ... → 只推 0x11 SLEEPOUT + delay + 0x29 DISPLAY ON
+#   必须在 LCM_STOCK 之后（需要 s3pro_init_table_a 等表数组）。
+if [ "${LAB_PUSH:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_lab_push.py" ]; then
+    if [ "${LCM_STOCK:-1}" != "1" ]; then
+        die "lab_push 需要 LCM_STOCK=1（表数组由 stock 补丁注入）"
+    fi
+    echo "--- 在线重推表实验台（fb_dispparam 0x9999/0x9998/0x9997）---"
+    "$PY" "$ROOT/scripts/patch_lab_push.py" . || die "lab_push 补丁失败"
+else
+    echo "跳过在线重推表实验台（LAB_PUSH=${LAB_PUSH:-0}）"
 fi
 
 
