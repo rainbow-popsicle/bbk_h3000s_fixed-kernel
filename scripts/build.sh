@@ -85,7 +85,7 @@ for s in \
     patch_lcm_stock.py patch_lcm_init.py patch_lcm_table.py \
     patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
     patch_disp_debug.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
-    patch_dimming_cmdmode.py patch_dimming_early.py \
+    patch_dimming_cmdmode.py patch_dimming_early.py patch_rst_new.py \
     patch_video_kick.py patch_vmcmd.py \
     patch_cm36686_i2c.py patch_cm36686_dts.py \
     patch_alsps_eint.py patch_alsps_ap3220.py patch_alsps_abs.py \
@@ -555,6 +555,23 @@ if [ "${LCM_STOCK:-1}" = "1" ] && [ "${LCMPATCH:-1}" = "1" ] \
         --tables "$ROOT/kernel-patches/lcm-table/stock_tables.c" || die "原厂驱动重写失败"
 else
     echo "跳过原厂驱动重写（LCM_STOCK=${LCM_STOCK:-1}）"
+fi
+
+
+# ★ 修复候选：补回 cappu 特有的 PMIC 复位脚 RST_EN_NEW(pio6397 14)（默认开）。
+#   patch_lcm_stock 照搬 bbk 原厂 3.18.35（不同设备、无 cappu 的 RST_NEW 概念），
+#   重写 lcm_resume/suspend_power 时把 RST_EN_NEW 丢了；本地 legacy 驱动与 LK
+#   都会同步拉这个脚。开机 kernel 不调 lcm_resume（LK 初始化直接亮），只有熄屏
+#   唤醒走 kernel 重建——怀疑缺这个复位脚导致重建后面板不显示。
+#   必须在 LCM_STOCK 之后运行。与 LCM_POWER_SEQ 兼容（仅补 RST_NEW 同步脉冲）。
+if [ "${RST_NEW_FIX:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_rst_new.py" ]; then
+    if [ "${LCM_STOCK:-1}" != "1" ]; then
+        die "rst_new 修复需要 LCM_STOCK=1（锚点为 stock 形态的 resume）"
+    fi
+    echo "--- 修复候选：补回 RST_EN_NEW 复位脚（pio6397）---"
+    "$PY" "$ROOT/scripts/patch_rst_new.py" . || die "RST_NEW 修复失败"
+else
+    echo "跳过 RST_NEW 修复（RST_NEW_FIX=${RST_NEW_FIX:-1}）"
 fi
 
 
