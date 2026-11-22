@@ -64,6 +64,10 @@ on:
         description: '[已证伪·勿开] 旧方案：CPU 裸写 MODE 切 CMD 推 dimming，会触发 CMDQ 风暴；与 dimming_early 互斥（默认关）'
         type: boolean
         default: false
+      rst_new_fix:
+        description: '修复候选：补回 cappu 的 PMIC 复位脚 RST_EN_NEW(pio6397)，stock 驱动照搬原厂时漏了（默认开）'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -127,6 +131,7 @@ jobs:
           DSI_START_FIX: ${{ (inputs.dsi_start_fix && '1') || '0' }}
           DIMMING_CMDMODE: ${{ (inputs.dimming_cmdmode && '1') || '0' }}
           DIMMING_EARLY: ${{ (inputs.dimming_early && '1') || '0' }}
+          RST_NEW_FIX: ${{ (inputs.rst_new_fix && '1') || '0' }}
         run: bash scripts/build.sh
 
       - name: 上传产物
