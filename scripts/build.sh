@@ -86,6 +86,7 @@ for s in \
     patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
     patch_disp_debug.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
     patch_dimming_cmdmode.py patch_dimming_early.py patch_rst_new.py patch_stock_timing.py patch_lab_push.py \
+    patch_lk_replay.py \
     patch_video_kick.py patch_vmcmd.py \
     patch_cm36686_i2c.py patch_cm36686_dts.py \
     patch_alsps_eint.py patch_alsps_ap3220.py patch_alsps_abs.py \
@@ -568,6 +569,20 @@ else
     echo "跳过原厂驱动重写（LCM_STOCK=${LCM_STOCK:-1}）"
 fi
 
+# ★ LK(cappu bootloader) 上电/复位时序复刻实验台（默认开，运行期 debugfs 可切）
+#   驱动原始实现是 VSP/VSN 先 → RST 12/12/32（= cappu LK 的实测时序，且带 RST_EN_NEW）；
+#   patch_lcm_stock 照抄 bbk 原厂 7.0（另一块屏）换成了 RST 5/2/25 → VSP/VSN、丢了 RST_EN_NEW。
+#   排除清单第 5 项「改 GPIO 顺序」之所以无效，是因为当时把延时一起改了（没控制变量）。
+#   本补丁把 顺序 / 三个延时 / RST_EN_NEW 拆成独立开关，
+#   一次刷机即可做受控实验。默认 variant=0 = 保持现有行为不变。
+#   必须在 LCM_STOCK 之后运行（依赖 s3pro_lcm_variant 与 stock 版 lcm_resume 结构）。
+if [ "${LK_REPLAY:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_lk_replay.py" ]; then
+    echo "--- LK 时序复刻实验台（debugfs: /sys/kernel/debug/s3pro_lk/）---"
+    "$PY" "$ROOT/scripts/patch_lk_replay.py" . || die "LK 时序实验台补丁失败"
+else
+    echo "跳过 LK 时序实验台（LK_REPLAY=${LK_REPLAY:-1}）"
+fi
+
 
 # ★★ 核心修复：DSI 时序参数改为原厂 3.18.35 实测值（默认开）。
 #   反汇编原厂 lcm_get_params @0x458f40，用 LANE_NUM=4 锚点反推 DSI 起始 0x1d4，
@@ -583,20 +598,25 @@ else
 fi
 
 
-# ★ 修复候选：补回 cappu 特有的 PMIC 复位脚 RST_EN_NEW(pio6397 14)（默认开）。
+# ★ 修复候选：补回 cappu 特有的 PMIC 复位脚 RST_EN_NEW(pio6397 14)（默认关·已证伪）。
 #   patch_lcm_stock 照搬 bbk 原厂 3.18.35（不同设备、无 cappu 的 RST_NEW 概念），
 #   重写 lcm_resume/suspend_power 时把 RST_EN_NEW 丢了；本地 legacy 驱动与 LK
 #   都会同步拉这个脚。开机 kernel 不调 lcm_resume（LK 初始化直接亮），只有熄屏
 #   唤醒走 kernel 重建——怀疑缺这个复位脚导致重建后面板不显示。
-#   必须在 LCM_STOCK 之后运行。与 LCM_POWER_SEQ 兼容（仅补 RST_NEW 同步脉冲）。
-if [ "${RST_NEW_FIX:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_rst_new.py" ]; then
+#   实测结论：两个 RST 都是 1016 同一脚 → 空操作，已证伪。
+#   ★ 与 LK_REPLAY 互斥：两者都改 RST_EN_NEW，且本补丁锚点是 stock 版 lcm_resume 原文，
+#     而 LK_REPLAY 会整体替换该函数（后者已自带 RST_EN_NEW 开关，功能覆盖）。
+if [ "${LK_REPLAY:-1}" = "1" ] && [ "${RST_NEW_FIX:-0}" = "1" ]; then
+    die "LK_REPLAY 与 RST_NEW_FIX 互斥：LK_REPLAY 已含 RST_EN_NEW 开关（debugfs 可切），请关掉 RST_NEW_FIX"
+fi
+if [ "${RST_NEW_FIX:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_rst_new.py" ]; then
     if [ "${LCM_STOCK:-1}" != "1" ]; then
         die "rst_new 修复需要 LCM_STOCK=1（锚点为 stock 形态的 resume）"
     fi
     echo "--- 修复候选：补回 RST_EN_NEW 复位脚（pio6397）---"
     "$PY" "$ROOT/scripts/patch_rst_new.py" . || die "RST_NEW 修复失败"
 else
-    echo "跳过 RST_NEW 修复（RST_NEW_FIX=${RST_NEW_FIX:-1}）"
+    echo "跳过 RST_NEW 修复（RST_NEW_FIX=${RST_NEW_FIX:-0}）"
 fi
 
 
