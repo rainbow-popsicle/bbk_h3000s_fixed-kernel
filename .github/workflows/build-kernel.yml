@@ -76,6 +76,10 @@ on:
         description: '[已作废·勿开] 换表方向无效，真正差异在时序参数（默认关）'
         type: boolean
         default: false
+      lab_push:
+        description: '在线重推表实验台：刷机后 echo 0x9999/0x9998/0x9997 > fb_dispparam 可在线推表，免重刷（默认关）'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -96,6 +100,8 @@ jobs:
         run: python3 tests/test_twrp_zip.py
       - name: 屏驱动补丁测试（在 mock 树里用真实 bash 跑那段 sed）
         run: python3 tests/test_lcm_patch.py
+      - name: 面板补丁链验证（默认开关下生成原厂配置：BOE表+原厂时序）
+        run: python3 tests/test_panel_patch_chain.py
 
   build:
     needs: selftest
@@ -142,6 +148,7 @@ jobs:
           RST_NEW_FIX: ${{ (inputs.rst_new_fix && '1') || '0' }}
           SHARP_TABLES: ${{ (inputs.sharp_tables && '1') || '0' }}
           STOCK_TIMING: ${{ (inputs.stock_timing && '1') || '0' }}
+          LAB_PUSH: ${{ (inputs.lab_push && '1') || '0' }}
         run: bash scripts/build.sh
 
       - name: 上传产物
