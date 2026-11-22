@@ -23,17 +23,20 @@ SCRIPTS = os.path.join(ROOT, "scripts")
 PY = sys.executable
 
 # build.sh 默认开关下的面板补丁调用顺序（行号见 build.sh）
+# 注意：patch_rst_new.py 与 patch_lk_replay.py 互斥（前者锚点是 stock 版 lcm_resume 原文，
+#       后者整体替换该函数，且已自带 RST_EN_NEW 开关）。build.sh 里 RST_NEW_FIX 默认已改 0，
+#       这里同样不跑 rst_new。
 CHAIN = [
     ("patch_lcm_stock.py", ["--tables", STOCK_TABLES]),   # LCM_STOCK=1, SHARP_TABLES=0 → BOE表
+    ("patch_lk_replay.py", []),                            # LK_REPLAY=1（默认）
     ("patch_stock_timing.py", []),                         # STOCK_TIMING=1
-    ("patch_rst_new.py", []),                              # RST_NEW_FIX=1
     ("patch_dimming_early.py", []),                        # DIMMING_EARLY=1
 ]
 
 EXPECT = {
     "S3PRO_STOCK_LCM": 1,
+    "S3PRO_LKREPLAY": 1,
     "S3PRO_STOCK_TIMING": 1,
-    "S3PRO_RST_NEW_FIX": 2,
     "S3PRO_DIM_EARLY": 3,
 }
 
@@ -81,17 +84,42 @@ def main():
             if not ok:
                 failed = True
 
-        print("\n--- 原厂时序参数（根因修复判据）---")
+        print("\n--- DSI timing 运行时可切（BOE / sharp 两套预设 + 变量赋值）---")
         timing = {
-            "vertical_backporch = 40;": "v_bp=40",
-            "vertical_frontporch = 40;": "v_fp=40",
-            "horizontal_sync_active = 4;": "h_sync=4",
-            "horizontal_backporch = 200;": "h_bp=200",
-            "horizontal_frontporch = 200;": "h_fp=200",
+            "u32 s3pro_tmg_preset;": "preset 变量存在",
+            "*vbp = 40; *vfp = 40; *hsync = 4; *hbp = 200; *hfp = 200;":
+                "BOE 预设 40/40/4/200/200",
+            "*vbp = 8; *vfp = 14; *hsync = 2; *hbp = 55; *hfp = 55;":
+                "sharp 预设 8/14/2/55/55",
+            "params->dsi.vertical_backporch = t_vbp;": "v_bp 用变量",
+            "params->dsi.vertical_frontporch = t_vfp;": "v_fp 用变量",
+            "params->dsi.horizontal_sync_active = t_hsync;": "h_sync 用变量",
+            "params->dsi.horizontal_backporch = t_hbp;": "h_bp 用变量",
+            "params->dsi.horizontal_frontporch = t_hfp;": "h_fp 用变量",
+            'debugfs_create_u32("preset"': "debugfs preset 节点",
         }
         for needle, label in timing.items():
             ok = needle in code
-            print("  [%s] %-12s" % ("OK" if ok else "FAIL", label))
+            print("  [%s] %-34s" % ("OK" if ok else "FAIL", label))
+            if not ok:
+                failed = True
+
+        print("\n--- 表选择实验台（BOE 表 + sharp 表 同时编进内核）---")
+        table_checks = {
+            "s3pro_init_table_a[]": "BOE 表 A 存在",
+            "s3pro_sharp_table[]": "sharp 表存在",
+            "0xCE, 2, {0xF0, 0x1F}": "sharp 特征命令 0xCE",
+            "0xD7, 2, {0x00, 0x2F}": "sharp 特征命令 0xD7",
+            "push SHARP table (12)": "sharp 单独推表分支",
+            "push SHARP (12) then BOE A (23)": "sharp→BOE 连发",
+            "push BOE A (23) then SHARP (12)": "BOE→sharp 连发",
+            "push BOE A (23) then BOE B (109)": "BOE A→B 连发",
+            'debugfs_create_u32("table"': "debugfs table 节点",
+            'debugfs_create_u32("table_gap"': "debugfs table_gap 节点",
+        }
+        for needle, label in table_checks.items():
+            ok = needle in code
+            print("  [%s] %-26s" % ("OK" if ok else "FAIL", label))
             if not ok:
                 failed = True
 
