@@ -56,10 +56,14 @@ on:
         description: '移除 ddp_dsi_start 尾部自加的 DSI_Start()（原厂反汇编纠错 §7.11；默认开=移除）'
         type: boolean
         default: true
-      dimming_cmdmode:
-        description: '根因修复：dimming(0x53/0x2C) 改在 CMD mode 下推表，绕开 VM_CMD 卡死（默认开）'
+      dimming_early:
+        description: '根因修复(CMDQ-safe)：dimming(0x53/0x2C) 前移到 lcm_resume 在 CMD mode 同步推表，不切 MODE/不碰 CMDQ（默认开）'
         type: boolean
         default: true
+      dimming_cmdmode:
+        description: '[已证伪·勿开] 旧方案：CPU 裸写 MODE 切 CMD 推 dimming，会触发 CMDQ 风暴；与 dimming_early 互斥（默认关）'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -122,6 +126,7 @@ jobs:
           VMCMD: ${{ (inputs.vmcmd && '1') || '0' }}
           DSI_START_FIX: ${{ (inputs.dsi_start_fix && '1') || '0' }}
           DIMMING_CMDMODE: ${{ (inputs.dimming_cmdmode && '1') || '0' }}
+          DIMMING_EARLY: ${{ (inputs.dimming_early && '1') || '0' }}
         run: bash scripts/build.sh
 
       - name: 上传产物
