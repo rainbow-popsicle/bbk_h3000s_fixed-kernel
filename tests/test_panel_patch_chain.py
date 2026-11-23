@@ -29,11 +29,12 @@ PY = sys.executable
 #   2) patch_lcm_gpio_fix.py 默认关 —— build.sh 里在它之前已用 sed 把
 #      "mediatek,mt8173-lcm"→"mediatek,nt35523_fhd"、gpio_lcm_*→gpio_lcd_*、goto out;→; 改完。
 #      所以这里先用 SED_LINES 模拟那段 sed，再跑补丁链。
+#   3) patch_dimming_early.py 默认关（workflow 的 dimming_early=false）——
+#      它会多推一次 dimming 表，验证 PLL_CLOCK 根因期间先排除掉，减少变量。
 CHAIN = [
     ("patch_lcm_stock.py", ["--tables", STOCK_TABLES]),   # LCM_STOCK=1, SHARP_TABLES=0 → BOE表
     ("patch_lk_replay.py", []),                            # LK_REPLAY=1（默认）
-    ("patch_stock_timing.py", []),                         # STOCK_TIMING=1
-    ("patch_dimming_early.py", []),                        # DIMMING_EARLY=1
+    ("patch_stock_timing.py", []),                         # STOCK_TIMING=1（含 PLL_CLOCK 修复）
 ]
 
 # 与 build.sh 里那段 sed 完全一致（顺序也一致：先 rst_en_new 再 rst_en）
@@ -51,7 +52,6 @@ EXPECT = {
     "S3PRO_STOCK_LCM": 1,
     "S3PRO_LKREPLAY": 1,
     "S3PRO_STOCK_TIMING": 1,
-    "S3PRO_DIM_EARLY": 3,
 }
 
 
