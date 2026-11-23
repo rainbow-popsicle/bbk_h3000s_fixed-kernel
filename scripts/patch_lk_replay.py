@@ -91,6 +91,12 @@ u32 s3pro_lk_vsn_dly;
  *   2 = three times
  */
 u32 s3pro_lk_repeat;
+/* ★ resume_power 行为（LOS 14.1 实测：只开 regulator + 20ms，完全不碰 GPIO）
+ *   1 = 只等 20ms，不碰 GPIO   ← 默认，与 LOS 14.1 等价
+ *   0 = 保持原行为：拉 GPIO_LCD_1V8_EN（sed 后 = gpio_lcd_enp = ENP = pio96）+ 20ms
+ * 每次唤醒都会重新读这个变量，所以改完下次熄屏唤醒就生效，不需要重启。
+ */
+u32 s3pro_lk_no_power = 1;
 
 /* Sharp native init table, copied from kernel-patches/lcm-table/sharp_tables.c
  * (Copyright 2018 XiaoMi, the panel this device actually has, wm 1536x2048).
@@ -139,6 +145,7 @@ static void s3pro_lk_dbg_init(void)
 	debugfs_create_u32("table_gap", 0644, d, &s3pro_lk_table_gap);
 	debugfs_create_u32("vsn_dly", 0644, d, &s3pro_lk_vsn_dly);
 	debugfs_create_u32("repeat", 0644, d, &s3pro_lk_repeat);
+	debugfs_create_u32("no_power", 0644, d, &s3pro_lk_no_power);
 	pr_alert("[S3PRO_LKREPLAY] debugfs ready: /sys/kernel/debug/s3pro_lk/\\n");
 }
 
@@ -298,6 +305,47 @@ NEW_RESUME = '''static void lcm_resume(void)
 RESUME_START = "static void lcm_resume(void)"
 RESUME_END_HINT = "/* 旧初始化表/睡眠表仍留在文件里但不再被调用"
 
+# ---- lcm_resume_power：LOS 14.1 的 resume_power 不碰 GPIO（regulator 供 1.8V）----
+# 锚点是 patch_lcm_stock.py 重写后的样子
+RESUME_POWER_OLD = '''static void lcm_resume_power(void)
+{
+\tLCM_LOGI("%s, begin\\n", __func__);
+
+\t/* 原厂 resume_power：1V8 上电 + 20ms */
+\tlcm_set_gpio_output(GPIO_LCD_1V8_EN, GPIO_OUT_ONE);
+\tMDELAY(20);
+
+\tLCM_LOGI("%s, end\\n", __func__);
+}'''
+
+RESUME_POWER_NEW = '''static void lcm_resume_power(void)
+{
+\tLCM_LOGI("%s, begin\\n", __func__);
+
+\t/* S3PRO_LKREPLAY: LOS 14.1 实测的 resume_power 是
+\t *     lcm_vgp_supply_enable()  (regulator_set_voltage 1.8V + enable)
+\t *     mdelay(20)
+\t * 完全不碰任何 GPIO。1.8V 由 PMIC 的 VGP LDO 提供（DTB: reg-lcm-1v8-supply）。
+\t *
+\t * 而我们的 GPIO_LCD_1V8_EN 被 build.sh 的 sed 映射成了 gpio_lcd_enp
+\t * （= ENP = pio 96，和 VSP 同一个脚），原代码会在 resume 之前就
+\t * 把 ENP 拉高，比 LOS 14.1 提前了一段。
+\t *
+\t * no_power=1（默认）-> 只等 20ms，与 LOS 14.1 等价
+\t * no_power=0        -> 保持原行为（拉 ENP + 20ms），用于对照
+\t * 每次唤醒都会读这个变量，改完下次熄屏唤醒即生效，无需重启。
+\t */
+\tpr_alert("[S3PRO_LKREPLAY] resume_power no_power=%u\\n", s3pro_lk_no_power);
+\tif (s3pro_lk_no_power) {
+\t\tMDELAY(20);
+\t} else {
+\t\tlcm_set_gpio_output(GPIO_LCD_1V8_EN, GPIO_OUT_ONE);
+\t\tMDELAY(20);
+\t}
+
+\tLCM_LOGI("%s, end\\n", __func__);
+}'''
+
 
 def find_driver(tree):
     base = os.path.join(tree, "drivers", "misc", "mediatek", "lcm")
@@ -420,6 +468,15 @@ def main():
     t = t[:si] + PRELUDE + NEW_RESUME + "\n" + t[ei:]
     print("  已替换 lcm_resume 为可调时序版本（含 RST_EN_NEW 开关）")
 
+    # lcm_resume_power：加 no_power 开关（默认不碰 GPIO，对齐 LOS 14.1）
+    if t.count(RESUME_POWER_OLD) != 1:
+        print("!! lcm_resume_power 锚点匹配 %d 次（应为 1），中止"
+              % t.count(RESUME_POWER_OLD))
+        print("   （patch_lcm_stock.py 的 resume_power 模板可能变了？）")
+        return 1
+    t = t.replace(RESUME_POWER_OLD, RESUME_POWER_NEW, 1)
+    print("  已给 lcm_resume_power 加 no_power 开关（默认=1，不碰 GPIO）")
+
     need = []
     for hdr in ("linux/debugfs.h", "linux/err.h", "linux/jiffies.h"):
         if "#include <%s>" % hdr not in t:
@@ -447,6 +504,10 @@ def main():
         "debugfs table 节点": 'debugfs_create_u32("table"' in c,
         "debugfs vsn_dly 节点": 'debugfs_create_u32("vsn_dly"' in c,
         "debugfs repeat 节点": 'debugfs_create_u32("repeat"' in c,
+        "debugfs no_power 节点": 'debugfs_create_u32("no_power"' in c,
+        "no_power 变量默认1": "u32 s3pro_lk_no_power = 1;" in c,
+        "resume_power 用 no_power": "if (s3pro_lk_no_power) {" in c,
+        "resume_power 仍保留原分支": "lcm_set_gpio_output(GPIO_LCD_1V8_EN, GPIO_OUT_ONE);" in c,
         "variant4 精确复刻(5/2/15)": "case 4:  d1 = 5;  d2 = 2;  d3 = 15;" in c,
         "vsn_dly 变量生效": "MDELAY(vsn_d);" in c,
         "二次推表循环": "re-push table #%u" in c,
