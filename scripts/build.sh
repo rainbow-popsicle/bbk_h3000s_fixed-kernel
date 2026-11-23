@@ -771,7 +771,7 @@ fi
 #   lcm_resume 执行时 MODE 仍是 0(CMD)，切换 video 发生在其后的 dpmgr_path_start。
 #   把 dimming 同步前移到此处走正常命令队列，不切 MODE、不碰 CMDQ。
 #   必须在 LCM_STOCK 之后运行（后者重写 lcm_resume）。与 DIMMING_CMDMODE 互斥。
-if [ "${DIMMING_EARLY:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_dimming_early.py" ]; then
+if [ "${DIMMING_EARLY:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_dimming_early.py" ]; then
     if [ "${DIMMING_CMDMODE:-0}" = "1" ]; then
         die "DIMMING_EARLY 与 DIMMING_CMDMODE 互斥，且后者已证伪（CPU 裸写 MODE 触发 CMDQ 风暴）；请关闭 dimming_cmdmode"
     fi
@@ -781,7 +781,7 @@ if [ "${DIMMING_EARLY:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_dimming_early.py
     echo "--- 根因修复：dimming 前移到 lcm_resume 同步推表（CMDQ-safe）---"
     "$PY" "$ROOT/scripts/patch_dimming_early.py" . || die "dimming early 修复失败"
 else
-    echo "跳过 dimming early 修复（DIMMING_EARLY=${DIMMING_EARLY:-1}）"
+    echo "跳过 dimming early 修复（DIMMING_EARLY=${DIMMING_EARLY:-0}）"
 fi
 
 
@@ -793,7 +793,7 @@ if [ "${DIMMING_CMDMODE:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_dimming_cmdmod
     if [ "${DISP_DEBUG:-1}" != "1" ]; then
         die "dimming CMD-mode（已证伪）依赖 DISP_DEBUG=1（提供 s3pro_dsi_set_mode），请一起开启"
     fi
-    if [ "${DIMMING_EARLY:-1}" = "1" ]; then
+    if [ "${DIMMING_EARLY:-0}" = "1" ]; then
         die "dimming CMD-mode（已证伪）与 DIMMING_EARLY 互斥，请先关闭 dimming_early"
     fi
     echo "--- [已证伪实验] dimming 推表切 CMD mode（CPU 裸写，仅供回退对比）---"
