@@ -145,7 +145,23 @@ def main():
             "params->dsi.horizontal_backporch = t_hbp;": "h_bp 用变量",
             "params->dsi.horizontal_frontporch = t_hfp;": "h_fp 用变量",
             'debugfs_create_u32("preset"': "debugfs preset 节点",
+            # ★ PLL_CLOCK 根因修复（395 是 sharp 的值，BOE 要 500）
+            "params->dsi.PLL_CLOCK = t_pll;": "PLL 用变量（不写死）",
+            "*pll = 500;": "BOE PLL=500",
+            "*pll = 395;": "sharp PLL=395",
+            'debugfs_create_u32("pll"': "debugfs pll 节点",
+            "params->dsi.noncont_clock = 1;": "noncont_clock=1（LOS 实测）",
+            # ★ resume_power 不碰 GPIO（LOS 14.1 只开 regulator）
+            "u32 s3pro_lk_no_power = 1;": "no_power 默认=1",
+            'debugfs_create_u32("no_power"': "debugfs no_power 节点",
+            "if (s3pro_lk_no_power) {": "resume_power 用 no_power 分支",
         }
+        # 这两项必须是「不存在」
+        if "params->dsi.PLL_CLOCK = 395;" in code:
+            print("  [FAIL] %-34s" % "旧 PLL_CLOCK=395 未清除")
+            failed = True
+        else:
+            print("  [OK] %-34s" % "旧 PLL_CLOCK=395 已清除")
         for needle, label in timing.items():
             ok = needle in code
             print("  [%s] %-34s" % ("OK" if ok else "FAIL", label))
