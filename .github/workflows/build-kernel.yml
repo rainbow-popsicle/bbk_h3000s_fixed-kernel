@@ -57,9 +57,9 @@ on:
         type: boolean
         default: true
       dimming_early:
-        description: '根因修复(CMDQ-safe)：dimming(0x53/0x2C) 前移到 lcm_resume 在 CMD mode 同步推表，不切 MODE/不碰 CMDQ（默认开）'
+        description: '[默认关·先排除干扰] dimming(0x53/0x2C) 前移到 lcm_resume 在 CMD mode 同步推表；会多推一次表，验证 PLL 根因期间先关掉'
         type: boolean
-        default: true
+        default: false
       dimming_cmdmode:
         description: '[已证伪·勿开] 旧方案：CPU 裸写 MODE 切 CMD 推 dimming，会触发 CMDQ 风暴；与 dimming_early 互斥（默认关）'
         type: boolean
@@ -69,7 +69,7 @@ on:
         type: boolean
         default: false
       stock_timing:
-        description: '★核心修复：DSI 时序改回原厂实测值(40/40/4/200/200)，解决熄屏唤醒黑屏（默认开，务必保持开）'
+        description: '★★核心修复：DSI 时序 40/40/4/200/200 + PLL_CLOCK 500（原驱动写死 395 是 sharp 时序的值，BOE 时序要多 21% 时钟）+ noncont_clock=1，全部对齐 LOS 14.1 实测（默认开，务必保持开）'
         type: boolean
         default: true
       sharp_tables:
@@ -81,7 +81,7 @@ on:
         type: boolean
         default: false
       lk_replay:
-        description: '★LK(cappu) 时序复刻实验台：debugfs 独立切换 上电顺序/三个复位延时/RST_EN_NEW，一次刷机做受控实验（默认开）'
+        description: '★时序实验台：debugfs 切 上电顺序(variant 0-4)/三个复位延时/vsn_dly/repeat/table/no_power，一次刷机做受控实验，改完下次熄屏唤醒即生效（默认开）'
         type: boolean
         default: true
       lcm_gpio_fix:
