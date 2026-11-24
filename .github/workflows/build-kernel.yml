@@ -73,6 +73,10 @@ on:
         description: '★★核心修复：时序 40/40/4/200/200 + PLL_CLOCK 500 + noncont_clock=1 + vertical_vfp_lp=0(禁 idle 动态帧率) + ufoe_enable=0，全部对齐 LOS 14.1 实测（默认开，务必保持开）'
         type: boolean
         default: true
+      vdo_eof_event:
+        description: '★★★核心：启用 video mode 的 trigger-loop 点火（MUTEX0_STREAM_EOF）。LOS 14.1 的 suspend 不停 loop 所以无需点火，我们的 suspend 停了 loop，video mode 的点火又被 #if 0 掐了 → 死锁（默认开）'
+        type: boolean
+        default: true
       lcm_init_table:
         description: '★★核心：让 lcm_init 做三级选表+推表（vendor id / pio89 电平 → 23/109 项），对齐 LOS 14.1；开机时 kernel 就推表而不是全靠 LK（默认开）'
         type: boolean
@@ -165,6 +169,7 @@ jobs:
           RST_NEW_FIX: ${{ (inputs.rst_new_fix && '1') || '0' }}
           SHARP_TABLES: ${{ (inputs.sharp_tables && '1') || '0' }}
           STOCK_TIMING: ${{ (inputs.stock_timing && '1') || '0' }}
+          VDO_EOF_EVENT: ${{ (inputs.vdo_eof_event && '1') || '0' }}
           LCM_INIT_TABLE: ${{ (inputs.lcm_init_table && '1') || '0' }}
           LCM_ESD_OFF: ${{ (inputs.lcm_esd_off && '1') || '0' }}
           LAB_PUSH: ${{ (inputs.lab_push && '1') || '0' }}
