@@ -33,8 +33,9 @@ PY = sys.executable
 #      它会多推一次 dimming 表，验证 PLL_CLOCK 根因期间先排除掉，减少变量。
 CHAIN = [
     ("patch_lcm_stock.py", ["--tables", STOCK_TABLES]),   # LCM_STOCK=1, SHARP_TABLES=0 → BOE表
+    ("patch_lcm_init_table.py", []),                       # LCM_INIT_TABLE=1（三级选表+开机推表）
     ("patch_lk_replay.py", []),                            # LK_REPLAY=1（默认）
-    ("patch_stock_timing.py", []),                         # STOCK_TIMING=1（含 PLL_CLOCK 修复）
+    ("patch_stock_timing.py", []),                         # STOCK_TIMING=1（PLL/vfp_lp/ufoe）
 ]
 
 # 与 build.sh 里那段 sed 完全一致（顺序也一致：先 rst_en_new 再 rst_en）
@@ -50,6 +51,7 @@ SED_LINES = [
 
 EXPECT = {
     "S3PRO_STOCK_LCM": 1,
+    "S3PRO_LCM_INIT": 3,
     "S3PRO_LKREPLAY": 1,
     "S3PRO_STOCK_TIMING": 1,
 }
@@ -132,7 +134,22 @@ def main():
             if not ok:
                 failed = True
 
-        print("\n--- DSI timing 运行时可切（BOE / sharp 两套预设 + 变量赋值）---")
+        print("\n--- ★ lcm_init 三级选表（对齐 LOS 14.1）---")
+        init_checks = {
+            "s3pro_lcm_vendor_id": "cmdline vendor_id 解析",
+            'of_get_named_gpio(nd, "gpio_lcd_id", 0)': "读 gpio_lcd_id(pio89)",
+            "gpio_get_value(id_gpio)": "读 pio89 电平",
+            "level=0 -> 23-item BOE table": "电平0 → 23 项 BOE",
+            "level=1 -> 109-item table": "电平1 → 109 项",
+            "291-item table NOT compiled, skip": "vendor_id==1 安全跳过",
+        }
+        for needle, label in init_checks.items():
+            ok = needle in code
+            print("  [%s] %-30s" % ("OK" if ok else "FAIL", label))
+            if not ok:
+                failed = True
+
+        print("\n--- ★ DSI timing 运行时可切（BOE / sharp 两套预设 + 变量赋值）---")
         timing = {
             "u32 s3pro_tmg_preset;": "preset 变量存在",
             "*vbp = 40; *vfp = 40; *hsync = 4; *hbp = 200; *hfp = 200;":
