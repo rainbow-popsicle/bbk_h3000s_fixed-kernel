@@ -58,6 +58,12 @@ OLD = '''static void lcm_init(void)
 NEW = '''/* S3PRO_LCM_INIT: 读 cmdline 的 lcm_vendor_id=N（LOS 14.1 get_lcm_vendor_id 的等价实现） */
 extern char *saved_command_line;
 
+/* S3PRO_LCM_INIT: 前置声明。
+ * s3pro_init_table_a/b 的定义在 lcm_init 之后的表区，C 必须先声明后使用，
+ * 所以把「按表推」包成两个辅助函数，实现插在 lcm_resume 之前（表定义之后）。 */
+static void s3pro_lcm_push_23(void);
+static void s3pro_lcm_push_109(void);
+
 static int s3pro_lcm_vendor_id(void)
 {
 	const char *p = saved_command_line;
@@ -99,8 +105,7 @@ static void lcm_init(void)
 	nd = of_find_compatible_node(NULL, NULL, "mediatek,nt35523_fhd");
 	if (!nd) {
 		pr_alert("[S3PRO_LCM_INIT] no lcm node, fallback to 23-item table\\n");
-		push_table(s3pro_init_table_a,
-			   sizeof(s3pro_init_table_a) / sizeof(struct LCM_setting_table), 1);
+		s3pro_lcm_push_23();
 		return;
 	}
 
@@ -119,16 +124,34 @@ static void lcm_init(void)
 
 	if (level == 0) {
 		pr_alert("[S3PRO_LCM_INIT] level=0 -> 23-item BOE table\\n");
-		push_table(s3pro_init_table_a,
-			   sizeof(s3pro_init_table_a) / sizeof(struct LCM_setting_table), 1);
+		s3pro_lcm_push_23();
 	} else if (level == 1) {
 		pr_alert("[S3PRO_LCM_INIT] level=1 -> 109-item table\\n");
-		push_table(s3pro_init_table_b,
-			   sizeof(s3pro_init_table_b) / sizeof(struct LCM_setting_table), 1);
+		s3pro_lcm_push_109();
 	} else {
 		pr_alert("[S3PRO_LCM_INIT] level unknown, skip table\\n");
 	}
 }'''
+
+# 实现块：插在 lcm_resume 之前（表定义之后），这样能引用 s3pro_init_table_a/b
+IMPL_ANCHOR = "static void lcm_resume(void)"
+
+IMPL = """/* S3PRO_LCM_INIT: 按表推送的实现（定义在 s3pro_init_table_a/b 之后）。
+ * 之所以包成函数而不在 lcm_init 里直接 push_table：
+ * 两张表的定义位于 lcm_init 之后，C 要求先声明后使用。 */
+static void s3pro_lcm_push_23(void)
+{
+\tpush_table(s3pro_init_table_a,
+\t\t   sizeof(s3pro_init_table_a) / sizeof(struct LCM_setting_table), 1);
+}
+
+static void s3pro_lcm_push_109(void)
+{
+\tpush_table(s3pro_init_table_b,
+\t\t   sizeof(s3pro_init_table_b) / sizeof(struct LCM_setting_table), 1);
+}
+
+"""
 
 INCLUDES = ("linux/of.h", "linux/of_gpio.h", "linux/gpio.h", "linux/string.h",
             "linux/kernel.h")
@@ -219,6 +242,13 @@ def main():
     t = t.replace(OLD, NEW, 1)
     print("  已把 lcm_init 换成三级选表 + 推表")
 
+    # 3) 在 lcm_resume 之前插入推送实现（必须在 s3pro_init_table_a/b 定义之后）
+    if t.count(IMPL_ANCHOR) != 1:
+        print("!! lcm_resume 锚点匹配 %d 次（应为 1），无法插入实现" % t.count(IMPL_ANCHOR))
+        return 1
+    t = t.replace(IMPL_ANCHOR, IMPL + IMPL_ANCHOR, 1)
+    print("  已在 lcm_resume 之前插入 push_23 / push_109 实现")
+
     need = []
     for hdr in INCLUDES:
         if "#include <%s>" % hdr not in t:
@@ -246,7 +276,12 @@ def main():
         "23 项分支": "level=0 -> 23-item BOE table" in c,
         "109 项分支": "level=1 -> 109-item table" in c,
         "291 项安全跳过": "291-item table NOT compiled, skip" in c,
-        "lcm_init 里推表": "push_table(s3pro_init_table_a," in c,
+        "push_23 实现": "static void s3pro_lcm_push_23(void)\n{" in c,
+        "push_109 实现": "static void s3pro_lcm_push_109(void)\n{" in c,
+        "实现里引用表 A": "push_table(s3pro_init_table_a," in c,
+        "实现里引用表 B": "push_table(s3pro_init_table_b," in c,
+        "lcm_init 调用 push_23": "s3pro_lcm_push_23();" in c,
+        "lcm_init 调用 push_109": "s3pro_lcm_push_109();" in c,
         "花括号配平": brace_balance(c) == 0,
     }
     print()
