@@ -104,9 +104,17 @@ NEW = '''	} else {
 		 *   -> ddp_dsi_trigger 不执行 -> DSI_START 永远 0（死锁）。
 		 *
 		 * 这里补一次 MUTEX0_STREAM_EOF 把第一帧推起来，
-		 * 之后靠真实 vsync 自持，不再需要软件点火。 */
-		if (dpmgr_path_is_idle(pgc->dpmgr_handle))
-			cmdqCoreSetEvent(CMDQ_EVENT_MUTEX0_STREAM_EOF);
+		 * 之后靠真实 vsync 自持，不再需要软件点火。
+		 *
+		 * 【为什么去掉 MTK 的 dpmgr_path_is_idle() 保护】
+		 * dpmgr_path_is_idle() = !dpmgr_path_is_busy()，后者遍历 path 上所有模块
+		 * 调 is_busy 回调；resume 刚 dpmgr_path_start 完，OVL/RDMA 等很可能报忙，
+		 * is_idle 返回 0 -> 点火被跳过（2026-11-24 实测：补了但 trig 仍 0）。
+		 * 而「等 path 空闲」本身就是死锁的一部分——没有帧它永远不会空闲。
+		 * 所以这里无条件点火，并把 is_idle 的值打出来备查。 */
+		pr_alert("[S3PRO_VDO_EOF] kick MUTEX0_STREAM_EOF (is_idle=%d)\\n",
+			 dpmgr_path_is_idle(pgc->dpmgr_handle));
+		cmdqCoreSetEvent(CMDQ_EVENT_MUTEX0_STREAM_EOF);
 	}'''
 
 
@@ -179,7 +187,8 @@ def main():
         "标记存在": MARK in c,
         "MUTEX0_STREAM_EOF 已启用": "cmdqCoreSetEvent(CMDQ_EVENT_MUTEX0_STREAM_EOF);" in c,
         "#if 0 已移除": "#if 0\n\t\tif (dpmgr_path_is_idle(pgc->dpmgr_handle))" not in c,
-        "dpmgr_path_is_idle 保护仍在": "if (dpmgr_path_is_idle(pgc->dpmgr_handle))" in c,
+        "无条件点火": "cmdqCoreSetEvent(CMDQ_EVENT_MUTEX0_STREAM_EOF);" in c,
+        "is_idle 打印": "[S3PRO_VDO_EOF] kick" in c,
         "花括号配平": brace_balance(c) == 0,
     }
     print()

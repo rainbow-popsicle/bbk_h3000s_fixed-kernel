@@ -85,7 +85,7 @@ for s in \
     patch_lcm_stock.py patch_lcm_init.py patch_lcm_table.py \
     patch_lcm_gpio_fix.py patch_lcm_init_table.py \
     patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
-    patch_disp_debug.py patch_vdo_eof_event.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
+    patch_disp_debug.py patch_dsi_config_start.py patch_vdo_eof_event.py patch_no_stop_loop.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
     patch_dimming_cmdmode.py patch_dimming_early.py patch_rst_new.py patch_stock_timing.py patch_lab_push.py \
     patch_lk_replay.py \
     patch_video_kick.py patch_vmcmd.py \
@@ -741,6 +741,32 @@ else
     echo "跳过显示诊断打印（DISP_DEBUG=${DISP_DEBUG:-1}）"
 fi
 
+# ★★★★ ddp_dsi_config 的 video 分支补 DSI_Start（默认开）—— 死锁的「第一推动」
+#   LOS 14.1 的 ddp_dsi_config @0x476b88 收尾段（0x4792f0-0x479310）是：
+#       ldr w0,[x29,#0x70] / cbz -> 跳过     ; = dsi_config->mode != CMD_MODE
+#       bl DSI_Start                          ; ★ 先启动 DSI
+#       bl Dsi_Config_VDO_Timing              ; 再配时序
+#   我们的顺序少了 DSI_Start。
+#
+#   为什么这一句决定生死（全链路来自源码）：
+#     _should_trigger_path() 在 CMDQ 模式下 return 0 -> _trigger_display_interface 不调 dpmgr_path_trigger
+#     _should_insert_wait_frame_done_token() 在 CMDQ 模式下 return 1
+#       -> config 队列插入 cmdqRecWaitNoClear(CMDQ_EVENT_MUTEX0_STREAM_EOF)  等事件 53
+#     _cmdq_build_trigger_loop 第一条也是 cmdqRecWait(53)（CMDQ_CODE_WFE，等待并清除）
+#     而 dpmgr_path_start 里的 ddp_dsi_start 把 DSI_START 清 0 -> DSI 不输出 -> 无帧 -> 53 永不来
+#       -> 两个队列全卡 -> trigger loop 里的 dpmgr_path_trigger 永不执行
+#       -> ddp_dsi_trigger 永不执行 -> DSI_Start 永不调用 -> DSI_START 永远 0（闭环）
+#     dpmgr_path_trigger 在 CMDQ 模式下【只有】trigger loop 一个调用点，所以 trigger loop 一卡就全死。
+#
+#   config 在 path_start 之前，此处 DSI_Start 能让 DSI 真实输出一帧 -> MUTEX0 产生真实的 53
+#   -> 两道等待都放行 -> 链条自己转起来。（这与软件伪造事件不同，不依赖任何竞态。）
+if [ "${DSI_CFG_START:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_dsi_config_start.py" ]; then
+    echo "--- ddp_dsi_config 补 DSI_Start（死锁第一推动，对齐 LOS 14.1）---"
+    "$PY" "$ROOT/scripts/patch_dsi_config_start.py" . || die "ddp_dsi_config 点火补丁失败"
+else
+    echo "跳过 ddp_dsi_config 点火（DSI_CFG_START=${DSI_CFG_START:-1}）"
+fi
+
 # ★★★ video mode 的 trigger-loop 点火（默认开）—— 死锁根因的直接修复
 #   背景（LOS 14.1 逆向确认，见 docs §8.19）：
 #     LOS 的 primary_display_suspend 不调用 _cmdq_stop_trigger_loop，
@@ -756,6 +782,19 @@ if [ "${VDO_EOF_EVENT:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_vdo_eof_event.py
     "$PY" "$ROOT/scripts/patch_vdo_eof_event.py" . || die "video mode 点火补丁失败"
 else
     echo "跳过 video mode 点火（VDO_EOF_EVENT=${VDO_EOF_EVENT:-1}）"
+fi
+
+# ★★★ 让 suspend 不停 CMDQ trigger loop（默认开）—— 对齐 LOS 14.1
+#   LOS 14.1 的 primary_display_suspend @0x4a8e0c 全程不调用 _cmdq_stop_trigger_loop，
+#   trigger loop 一直活着；resume 后硬件产生 MUTEX0_STREAM_EOF(53)，链条自然接上。
+#   我们停了 loop，resume 重启后卡在 cmdqRecWait(53) 上：
+#     ddp_dsi_start 清 DSI_START=0 -> DSI 不输出 -> 无帧 -> 53 不来
+#     -> ddp_dsi_trigger 不执行 -> DSI_START 永远 0（死锁）。
+if [ "${NO_STOP_LOOP:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_no_stop_loop.py" ]; then
+    echo "--- suspend 不停 CMDQ trigger loop（对齐 LOS 14.1）---"
+    "$PY" "$ROOT/scripts/patch_no_stop_loop.py" . || die "no_stop_loop 补丁失败"
+else
+    echo "跳过 no_stop_loop（NO_STOP_LOOP=${NO_STOP_LOOP:-1}）"
 fi
 
 
