@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自动亮度 overlay —— 数值全部来自原厂 Android 7.0 的 framework-res.apk
+
+  根因（实机 dump 对比确认）：
+    8.1 移植版 /system/framework/framework-res.apk
+        array/config_autoBrightnessLevels              () size=0   ← 空
+        array/config_autoBrightnessLcdBacklightValues  () size=0   ← 空
+    原厂 7.0 的同一份资源（从 system.img 里抽出 framework-res.apk 后 dump）
+        array/config_autoBrightnessLevels              () size=17  有真实数值
+        array/config_autoBrightnessLcdBacklightValues  () size=18  有真实数值
+  → 移植时把厂商调好的自动亮度曲线弄丢了，AOSP 在数组为空时会把
+    mUseSoftwareAutoBrightnessConfig 置为 false，于是框架从不订阅光感。
+
+  所以这个 overlay 就是把厂商那份 17/18 项原样补回去。
+
+  取值出处（原厂 7.0 dump）：
+    levels      = [128, 256, 384, 512, 640, 768, 896, 1024, 2048, 4096,
+                   6144, 8192, 10240, 12288, 14336, 16384, 18432]
+    backlight   = [8, 64, 98, 104, 110, 116, 122, 128, 134, 182, 255, 255,
+                   255, 255, 255, 255, 255, 255]
+
+  注意 length 关系：backlight 必须比 levels 多一项（18 = 17 + 1），
+  否则 AOSP 会打印 "Error in config.xml" 并关闭自动亮度。
+-->
+<resources>
+
+    <!-- lux 分档阈值（17 项，原厂原值） -->
+    <integer-array name="config_autoBrightnessLevels">
+        <item>128</item>
+        <item>256</item>
+        <item>384</item>
+        <item>512</item>
+        <item>640</item>
+        <item>768</item>
+        <item>896</item>
+        <item>1024</item>
+        <item>2048</item>
+        <item>4096</item>
+        <item>6144</item>
+        <item>8192</item>
+        <item>10240</item>
+        <item>12288</item>
+        <item>14336</item>
+        <item>16384</item>
+        <item>18432</item>
+    </integer-array>
+
+    <!-- 对应 18 档背光（0~255，原厂原值） -->
+    <integer-array name="config_autoBrightnessLcdBacklightValues">
+        <item>8</item>
+        <item>64</item>
+        <item>98</item>
+        <item>104</item>
+        <item>110</item>
+        <item>116</item>
+        <item>122</item>
+        <item>128</item>
+        <item>134</item>
+        <item>182</item>
+        <item>255</item>
+        <item>255</item>
+        <item>255</item>
+        <item>255</item>
+        <item>255</item>
+        <item>255</item>
+        <item>255</item>
+        <item>255</item>
+    </integer-array>
+
+    <!-- 原厂 7.0 里这个是 true；8.1 也是 true，一并显式声明保险 -->
+    <bool name="config_automatic_brightness_available">true</bool>
+
+</resources>

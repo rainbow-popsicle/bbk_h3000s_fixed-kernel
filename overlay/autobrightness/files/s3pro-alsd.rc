@@ -1,0 +1,19 @@
+# s3pro-alsd —— 光感自动亮度守护的开机自启
+#
+# 为什么放在 /system/etc/init/：
+#   Android 8 的 init 会自动加载该目录下所有 .rc（不需要改 init.rc）。
+#   本机 SELinux 是 Permissive，所以跑自定义 shell 脚本不需要写 sepolicy。
+#
+# 为什么用 disabled + boot_completed 触发：
+#   · 不参与早期开机，避免拖慢启动；
+#   · 等系统完全起来再拉，此时 /sys 下的光感和背光节点都已就绪；
+#   · 就算脚本本身出错，也只是这个服务起不来，不会影响开机。
+
+service s3pro-alsd /system/bin/s3pro-alsd
+    class late_start
+    user root
+    group root system
+    disabled
+
+on property:sys.boot_completed=1
+    start s3pro-alsd

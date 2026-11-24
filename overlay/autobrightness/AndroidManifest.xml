@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  步步高 S3 Pro (h3000s) LineageOS 15.1 —— 自动亮度开关 overlay
+
+  背景：本 ROM 的 framework-res 里 config_automatic_brightness_available = false，
+  导致 DisplayPowerController 把 mUseSoftwareAutoBrightnessConfig 判成 false，
+  于是它从不订阅光感（dumpsys sensorservice 的 Active sensors 里只有加速度计），
+  自动亮度永远不生效。
+
+  光感驱动本身是好的（内核修好后，手电筒直照能读到 0xEE56 = 61014），
+  所以这里只做一件事：把这个 bool 覆盖成 true。
+
+  资源名来源：直接从设备 /system/framework/framework-res.apk 里查字符串确认
+    config_automatic_brightness_available            存在 ✓（本 overlay 覆盖它）
+    config_autoBrightnessAvailable                   不存在
+    config_autoBrightnessLevels                      存在 ✓（无需覆盖）
+    config_autoBrightnessLcdBacklightValues          存在 ✓（无需覆盖）
+
+  注意：这是 RRO（运行时资源覆盖），不是改 system 分区，
+  cmd overlay enable/disable 可随时开关，不碰 ROM 本体。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.s3pro.overlay.autobrightness"
+    android:versionCode="1"
+    android:versionName="1.0">
+
+    <!-- targetPackage=android：覆盖 framework-res -->
+    <overlay
+        android:targetPackage="android"
+        android:isStatic="false"
+        android:priority="1" />
+
+    <!-- 纯资源覆盖，没有代码 -->
+    <application android:hasCode="false" />
+</manifest>

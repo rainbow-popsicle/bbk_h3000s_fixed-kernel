@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自动亮度曲线 overlay —— 对标手动亮度版（2026-11-21）
+
+  目标：自动亮度的最低/最高与手动亮度对齐
+    手动 range = 1~255，滑块最低 = 10 (config_screenBrightnessSettingMinimum)
+    旧曲线最低 backlight=8（比滑块最低还暗，室内 raw=0 时近黑屏）
+    旧曲线满档 255 要 lux>=4096，但本机手电直射 lux 仅约 261 → 永远到不了满亮
+
+  新曲线：
+    levels(17)    重新压缩到实测可达 lux 范围 4~264（原为 128~18432）
+    backlight(18) 10 起步（对齐滑块最低），261 lux 即达 255（对齐手动最高）
+    中间档按 lux 4→264 单调铺开到背光 10→255
+
+  实测依据（2026-11-20 P1 采样 + P0 验证）：
+    lux=0    室内自然光，raw=0        → 目标背光 10
+    lux=89.9 raw=0x099A              → 目标背光 ~110
+    lux=261  raw=0x0F48 手电直射峰值  → 目标背光 255
+
+  长度关系：backlight 必须 = levels + 1（18 = 17 + 1），否则 AOSP 会关闭自动亮度。
+  回退：删除本 overlay 或 cmd overlay disable 即可；原厂曲线见 config.xml.orig。
+-->
+<resources>
+
+    <!-- lux 分档阈值（17 项，压缩到实测可达范围） -->
+    <integer-array name="config_autoBrightnessLevels">
+        <item>4</item>
+        <item>8</item>
+        <item>16</item>
+        <item>28</item>
+        <item>42</item>
+        <item>58</item>
+        <item>76</item>
+        <item>96</item>
+        <item>118</item>
+        <item>142</item>
+        <item>168</item>
+        <item>196</item>
+        <item>220</item>
+        <item>238</item>
+        <item>250</item>
+        <item>258</item>
+        <item>264</item>
+    </integer-array>
+
+    <!-- 对应 18 档背光（0~255） -->
+    <integer-array name="config_autoBrightnessLcdBacklightValues">
+        <item>10</item>
+        <item>25</item>
+        <item>45</item>
+        <item>66</item>
+        <item>88</item>
+        <item>110</item>
+        <item>130</item>
+        <item>150</item>
+        <item>170</item>
+        <item>190</item>
+        <item>208</item>
+        <item>224</item>
+        <item>238</item>
+        <item>248</item>
+        <item>253</item>
+        <item>255</item>
+        <item>255</item>
+        <item>255</item>
+    </integer-array>
+
+    <bool name="config_automatic_brightness_available">true</bool>
+
+</resources>

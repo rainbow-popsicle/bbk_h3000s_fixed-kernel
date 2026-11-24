@@ -1,0 +1,129 @@
+#!/system/bin/sh
+#
+# s3pro-alsd —— 光感自动亮度守护（只在亮屏那一刻调一次）
+#
+# == 行为约定（按使用要求）==
+#   · 屏幕从熄灭变成亮起时：读一次光感，按原厂曲线算出目标亮度，写一次；
+#   · 屏幕亮着期间：完全不调光（不管光照怎么变）；
+#   · 屏幕熄灭：什么都不做。
+#   也就是说，一次亮屏周期内最多写 2 次 sysfs（见下面为什么要 2 次）。
+#
+# == 为什么要写 2 次 ==
+#   实测：框架在亮屏时会把亮度写回它自己的值（102）。
+#   如果我们在它之前写，会被它覆盖掉，所以：
+#     1) 检测到亮屏后先等 2.5 秒，让框架把它那一下做完；
+#     2) 再写我们的目标值；
+#     3) 2 秒后复查一次，如果又被覆盖，就补写一次 —— 只补这一次，之后不再管。
+#
+# == 为什么需要这个守护进程 ==
+#   1. 本 ROM 的 framework 自动亮度被关掉了：
+#        dumpsys display → mUseSoftwareAutoBrightnessConfig=false
+#      因为移植时把 config_autoBrightnessLevels / LcdBacklightValues
+#      两个数组弄空了（原厂 7.0 里分别是 17 / 18 项真实数值）。
+#      用 RRO overlay 补回去后该标志仍是 false，框架不认，改不动。
+#   2. 改 Settings 里的 screen_brightness 也不生效（写 50/200 实际一直 102）。
+#   所以只能直接写背光 sysfs。
+#
+# == 曲线出处 ==
+#   从原厂 system.img 抽出的 framework-res.apk 里 dump 得到：
+#   levels(17)    = 128 256 384 512 640 768 896 1024 2048 4096 6144 8192
+#                   10240 12288 14336 16384 18432
+#   backlight(18) = 8 64 98 104 110 116 122 128 134 182 255 255 255 255 255 255 255 255
+#
+# == 调试 ==
+#   s3pro-alsd map 5000     # 只打印该 raw 值对应的目标背光
+#
+ALS=/sys/bus/platform/drivers/als_ps/als
+ACTIVE=/sys/devices/virtual/misc/m_alsps_misc/alsactive
+BL=/sys/class/leds/lcd-backlight/brightness
+
+LOG=/data/local/tmp/s3pro-alsd.log
+
+log() {
+    echo "$(date +%H:%M:%S) $*" >> $LOG 2>/dev/null
+    if [ -f $LOG ]; then
+        tail -n 200 $LOG > $LOG.tmp 2>/dev/null && mv $LOG.tmp $LOG 2>/dev/null
+    fi
+}
+
+map_value() {
+    v=$1
+    [ "$v" -lt 0 ] && v=0
+    if   [ "$v" -lt   128 ]; then echo 8
+    elif [ "$v" -lt   256 ]; then echo 64
+    elif [ "$v" -lt   384 ]; then echo 98
+    elif [ "$v" -lt   512 ]; then echo 104
+    elif [ "$v" -lt   640 ]; then echo 110
+    elif [ "$v" -lt   768 ]; then echo 116
+    elif [ "$v" -lt   896 ]; then echo 122
+    elif [ "$v" -lt  1024 ]; then echo 128
+    elif [ "$v" -lt  2048 ]; then echo 134
+    elif [ "$v" -lt  4096 ]; then echo 182
+    else                         echo 255
+    fi
+}
+
+if [ "$1" = "map" ] && [ -n "$2" ]; then
+    map_value "$2"
+    exit 0
+fi
+
+echo 1 > $ACTIVE 2>/dev/null
+log "start"
+
+was_on=0
+
+while true; do
+    bl=$(cat $BL 2>/dev/null)
+
+    if [ -z "$bl" ]; then
+        sleep 1
+        continue
+    fi
+
+    # 熄屏：只记状态，不做事
+    if [ "$bl" = "0" ]; then
+        was_on=0
+        sleep 1
+        continue
+    fi
+
+    # ---- 只在"从熄灭到亮起"这一瞬间动作 ----
+    # 框架在亮屏后几秒内还会写几次自己的值（实测见过 102 / 138 / 161），
+    # 所以给一个固定 8 秒的收敛窗口：窗口内发现被覆盖就补回，
+    # 窗口一结束就彻底撒手，之后直到下次亮屏为止不再写任何东西。
+    if [ "$was_on" = "0" ]; then
+        was_on=1
+
+        sleep 2.5           # 等框架先把它那一下做完
+
+        raw=$(cat $ALS 2>/dev/null)
+        if [ -n "$raw" ]; then
+            v=$((raw))
+            tgt=$(map_value "$v")
+            echo $tgt > $BL 2>/dev/null
+            log "screen-on: raw=$raw -> $tgt"
+
+            n=0
+            while [ "$n" -lt 8 ]; do
+                sleep 1
+                now=$(cat $BL 2>/dev/null)
+                if [ -z "$now" ] || [ "$now" = "0" ]; then
+                    # 期间又熄屏了，直接结束窗口
+                    was_on=0
+                    break
+                fi
+                diff=$(( now - tgt ))
+                [ "$diff" -lt 0 ] && diff=$(( 0 - diff ))
+                if [ "$diff" -gt 4 ]; then
+                    echo $tgt > $BL 2>/dev/null
+                    log "settle: got=$now -> $tgt"
+                fi
+                n=$(( n + 1 ))
+            done
+            log "settle done, hold $tgt"
+        fi
+    fi
+
+    sleep 1
+done
