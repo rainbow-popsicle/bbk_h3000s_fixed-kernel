@@ -56,7 +56,7 @@ on:
         description: '[空操作·可关] 移除 ddp_dsi_start 里的 DSI_Start()；实测源码里从没有那个标记块，开关无效果，已默认关'
         type: boolean
         default: false
-      
+
       dimming_early:
         description: '[默认关·先排除干扰] dimming(0x53/0x2C) 前移到 lcm_resume 在 CMD mode 同步推表；会多推一次表，验证 PLL 根因期间先关掉'
         type: boolean
