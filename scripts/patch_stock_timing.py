@@ -95,6 +95,21 @@ PLL_NEW = '''	/* S3PRO_STOCK_TIMING: PLL_CLOCK 必须随时序变！
 	params->dsi.noncont_clock = 1;	/* LOS 14.1 实测值，与 cont_clock=0 配对 */
 	params->dsi.PLL_CLOCK = t_pll;'''
 
+# vertical_vfp_lp：LOS 14.1 疑似未启用 idle 动态帧率（DISPCHECK 无 vfp_lp 项）
+VFP_LP_OLD = '''	params->dsi.vertical_vfp_lp = 200; /* For dynamic fps, in idle LP mode set fps to 55Hz */'''
+
+VFP_LP_NEW = '''	/* S3PRO_STOCK_TIMING: LOS 14.1 的 DISPCHECK 里没有 vfp_lp 项，疑似未启用 idle
+	 * 动态帧率；驱动原值 200 会让 vertical_frontporch 在 40<->200 之间每 1~3 秒切换。
+	 * 默认 0（禁用），debugfs 节点 s3pro_tmg/vfp_lp 可写回 200 做对照。 */
+	params->dsi.vertical_vfp_lp = s3pro_tmg_vfp_lp;'''
+
+# ufoe_enable：LOS 14.1 疑似未启用 UFOE
+UFOE_OLD = '''	params->dsi.ufoe_enable = 1;'''
+
+UFOE_NEW = '''	/* S3PRO_STOCK_TIMING: LOS 14.1 的 DISPCHECK 没有 ufoe_enable 项，疑似为 0。
+	 * 默认 0（关闭 UFOE），debugfs 节点 s3pro_tmg/ufoe 可写回 1 做对照。 */
+	params->dsi.ufoe_enable = s3pro_tmg_ufoe;'''
+
 # 插在 lcm_get_params 之前的全局变量与辅助函数
 PRELUDE = '''/* S3PRO_STOCK_TIMING: DSI video timing runtime/compile-time switch
  *
@@ -117,6 +132,13 @@ u32 s3pro_tmg_hsync;
 u32 s3pro_tmg_hbp;
 u32 s3pro_tmg_hfp;
 u32 s3pro_tmg_pll;
+/* LOS 14.1 的 DISPCHECK 只打印 vfp: 40，没有 vfp_lp —— 很可能没启用 idle 动态帧率。
+ * 驱动原值 200（idle 55Hz），实测日志里 vertical_frontporch 每 1~3 秒在 40<->200 来回切，
+ * 这是 LOS 14.1 没有的行为。默认 0（禁用 idle 动态帧率），节点可写回 200 做对照。 */
+u32 s3pro_tmg_vfp_lp;
+/* LOS 14.1 的 DISPCHECK 没有 ufoe_enable 项，很可能为 0；
+ * 驱动原值 1（UFOE 帧率增强引擎）。默认 0，节点可写回 1 做对照。 */
+u32 s3pro_tmg_ufoe;
 
 extern char *saved_command_line;
 
@@ -163,6 +185,8 @@ static void s3pro_tmg_dbg_init(void)
 	debugfs_create_u32("hbp", 0644, d, &s3pro_tmg_hbp);
 	debugfs_create_u32("hfp", 0644, d, &s3pro_tmg_hfp);
 	debugfs_create_u32("pll", 0644, d, &s3pro_tmg_pll);
+	debugfs_create_u32("vfp_lp", 0644, d, &s3pro_tmg_vfp_lp);
+	debugfs_create_u32("ufoe", 0644, d, &s3pro_tmg_ufoe);
 	pr_alert("[S3PRO_TMG] debugfs ready: /sys/kernel/debug/s3pro_tmg/ preset=%u\\n",
 		 s3pro_tmg_preset);
 }
@@ -308,6 +332,20 @@ def main():
     t = t.replace(PLL_OLD, PLL_NEW, 1)
     print("  已把 PLL_CLOCK 改成变量（395->500 随时序）+ noncont_clock=1")
 
+    # 2c) vertical_vfp_lp -> 变量（默认 0，禁用 idle 动态帧率）
+    if t.count(VFP_LP_OLD) != 1:
+        print("!! vertical_vfp_lp 锚点匹配 %d 次（应为 1），中止" % t.count(VFP_LP_OLD))
+        return 1
+    t = t.replace(VFP_LP_OLD, VFP_LP_NEW, 1)
+    print("  已把 vertical_vfp_lp 改成变量（默认 0，禁用 idle 动态帧率）")
+
+    # 2d) ufoe_enable -> 变量（默认 0，对齐 LOS 14.1）
+    if t.count(UFOE_OLD) != 1:
+        print("!! ufoe_enable 锚点匹配 %d 次（应为 1），中止" % t.count(UFOE_OLD))
+        return 1
+    t = t.replace(UFOE_OLD, UFOE_NEW, 1)
+    print("  已把 ufoe_enable 改成变量（默认 0）")
+
     # 3) 在 lcm_get_params 之前插入全局变量 + debugfs
     fi = t.find("static void lcm_get_params(LCM_PARAMS *params)")
     if fi < 0:
@@ -350,6 +388,12 @@ def main():
         "PLL 用变量(不再写死395)": "params->dsi.PLL_CLOCK = t_pll;" in c,
         "旧 395 已清除": "params->dsi.PLL_CLOCK = 395;" not in c,
         "noncont_clock=1": "params->dsi.noncont_clock = 1;" in c,
+        "vfp_lp 用变量(默认0)": "params->dsi.vertical_vfp_lp = s3pro_tmg_vfp_lp;" in c,
+        "ufoe 用变量(默认0)": "params->dsi.ufoe_enable = s3pro_tmg_ufoe;" in c,
+        "debugfs vfp_lp 节点": 'debugfs_create_u32("vfp_lp"' in c,
+        "debugfs ufoe 节点": 'debugfs_create_u32("ufoe"' in c,
+        "旧 vfp_lp=200 已清除": "params->dsi.vertical_vfp_lp = 200;" not in c,
+        "旧 ufoe=1 已清除": "params->dsi.ufoe_enable = 1;" not in c,
         "get_params 用变量": "params->dsi.vertical_backporch = t_vbp;" in c,
         "pr_alert 打印": "[S3PRO_TMG] get_params" in c,
         "pr_alert 带 pll": "pll=%u" in c,

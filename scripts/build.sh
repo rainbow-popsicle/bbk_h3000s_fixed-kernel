@@ -83,8 +83,8 @@ for s in \
     patch_sensors.py \
     patch_battery_qmax.py patch_battery_soc.py patch_battery_fgadc.py \
     patch_lcm_stock.py patch_lcm_init.py patch_lcm_table.py \
-    patch_lcm_gpio_fix.py \
-    patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
+    patch_lcm_gpio_fix.py patch_lcm_init_table.py \
+    patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py patch_dsi_start_en.py \
     patch_disp_debug.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
     patch_dimming_cmdmode.py patch_dimming_early.py patch_rst_new.py patch_stock_timing.py patch_lab_push.py \
     patch_lk_replay.py \
@@ -585,6 +585,20 @@ else
     echo "跳过原厂驱动重写（LCM_STOCK=${LCM_STOCK:-1}）"
 fi
 
+# ★★★ lcm_init 三级选表 + 推表（默认开）—— 对齐 LOS 14.1
+#   LOS 14.1 的 lcm_init @0x458344 是三级选表（见 docs §8.1）：
+#     vendor id(cmdline lcm_vendor_id=)==1 -> 291 项表
+#     否则读 GPIO lcd_id(pio 89)：电平 0 -> 23 项(BOE) / 1 -> 109 项
+#   而我们的 lcm_init 只有 gpio+hwinfo 两行，从不推表 —— 开机亮全靠 LK。
+#   本补丁让 kernel 在开机时也主动推一次表，并打印 vendor id / pio89 电平 / 选中哪张表。
+#   必须在 patch_lcm_stock.py 之后（stock 会重写驱动，但不动 lcm_init）。
+if [ "${LCM_INIT_TABLE:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_lcm_init_table.py" ]; then
+    echo "--- lcm_init 三级选表 + 推表（对齐 LOS 14.1）---"
+    "$PY" "$ROOT/scripts/patch_lcm_init_table.py" . || die "lcm_init 三级选表失败"
+else
+    echo "跳过 lcm_init 三级选表（LCM_INIT_TABLE=${LCM_INIT_TABLE:-1}）"
+fi
+
 # ★ LK(cappu bootloader) 上电/复位时序复刻实验台（默认开，运行期 debugfs 可切）
 #   驱动原始实现是 VSP/VSN 先 → RST 12/12/32（= cappu LK 的实测时序，且带 RST_EN_NEW）；
 #   patch_lcm_stock 照抄 bbk 原厂 7.0（另一块屏）换成了 RST 5/2/25 → VSP/VSN、丢了 RST_EN_NEW。
@@ -685,12 +699,12 @@ fi
 #         触发 ddp_dsi_stop → DSI_Reset → lcm_init，反复把显示引擎停下，画面再也回不来。
 #   作者内核全程 0 次 esd_recovery。
 #   本补丁【只关 ESD】，不动 lcm_init/lcm_resume 的时序（那是 v2 的改动，默认关闭）。
-if [ "${LCM_ESD_OFF:-1}" = "1" ] && [ "${LCMPATCH:-1}" = "1" ] \
+if [ "${LCM_ESD_OFF:-0}" = "1" ] && [ "${LCMPATCH:-1}" = "1" ] \
    && [ -f "$ROOT/scripts/patch_lcm_esd_off.py" ]; then
     echo "--- 关闭面板 ESD 自检（切断 recovery 死循环）---"
     "$PY" "$ROOT/scripts/patch_lcm_esd_off.py" . || die "关闭 ESD 失败"
 else
-    echo "跳过 ESD 关闭（LCM_ESD_OFF=${LCM_ESD_OFF:-1}）"
+    echo "跳过 ESD 关闭（LCM_ESD_OFF=${LCM_ESD_OFF:-0}）"
 fi
 
 
@@ -700,11 +714,31 @@ fi
 #        原厂只在 ddp_dsi_trigger（每帧触发）里调，而我们 trigger 路径本来就有，
 #        start 里这处属于无原厂依据的重复动作 → 移除。
 #   脚本幂等：找不到标记块安全跳过；只删 start 尾部那块，不动 trigger 的 DSI_Start。
-if [ "${DSI_START_FIX:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_dsi_start.py" ]; then
+#   ⚠️ 2026-11-23 发现：源码里从来就没有那个标记块，所以本步实际是**空操作**，
+#      无论开关如何都不会增删 DSI_Start。默认改成 0，改用下面的 DSI_START_EN。
+if [ "${DSI_START_FIX:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_dsi_start.py" ]; then
     echo "--- 移除 ddp_dsi_start 自加的 DSI_Start()（对齐原厂）---"
     "$PY" "$ROOT/scripts/patch_dsi_start.py" . || die "移除自加 DSI_Start 失败"
 else
-    echo "跳过移除自加 DSI_Start（DSI_START_FIX=${DSI_START_FIX:-1}）"
+    echo "跳过移除自加 DSI_Start（DSI_START_FIX=${DSI_START_FIX:-0}；该步实际为空操作）"
+fi
+
+# ★★★ 在 ddp_dsi_start 末尾【真正补一次】DSI_Start()（默认开）
+#   实测死锁链（2026-11-23，同一颗内核健康态 vs 唤醒黑屏态逐寄存器对比）：
+#     ddp_dsi_start 把 DSI_START 清 0，全函数不设回 1
+#       → DSI 不输出（start=0 sta=0 trig=0 hs_tx=1 ctl=1，对比健康态 1/0x20/0x440/16/16）
+#       → 没有 vsync / RDMA0 EOF
+#       → trigger loop 卡在 cmdqRecWait(CMDQ_EVENT_DISP_RDMA0_EOF)
+#       → 唯一置位 START 的 ddp_dsi_trigger 不执行
+#       → START 永远 0（闭环）
+#   而 _cmdq_start_trigger_loop() 在 video mode 下走空分支，不设初始事件，无人破环。
+#   开机不黑是因为 primary_display_resume() 的 is_ipoh_bootup 分支跳过 dpmgr_path_start，
+#   根本不调 ddp_dsi_start，START 保持 LK 设的 1。
+if [ "${DSI_START_EN:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_dsi_start_en.py" ]; then
+    echo "--- 在 ddp_dsi_start 末尾补 DSI_Start()（打破唤醒死锁）---"
+    "$PY" "$ROOT/scripts/patch_dsi_start_en.py" . || die "补 DSI_Start 失败"
+else
+    echo "跳过补 DSI_Start（DSI_START_EN=${DSI_START_EN:-1}）"
 fi
 
 
