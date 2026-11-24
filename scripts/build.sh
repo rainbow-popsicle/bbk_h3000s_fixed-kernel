@@ -85,7 +85,7 @@ for s in \
     patch_lcm_stock.py patch_lcm_init.py patch_lcm_table.py \
     patch_lcm_gpio_fix.py patch_lcm_init_table.py \
     patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
-    patch_disp_debug.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
+    patch_disp_debug.py patch_vdo_eof_event.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
     patch_dimming_cmdmode.py patch_dimming_early.py patch_rst_new.py patch_stock_timing.py patch_lab_push.py \
     patch_lk_replay.py \
     patch_video_kick.py patch_vmcmd.py \
@@ -739,6 +739,23 @@ if [ "${DISP_DEBUG:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_disp_debug.py" ]; t
     "$PY" "$ROOT/scripts/patch_disp_debug.py" . || die "显示诊断补丁失败"
 else
     echo "跳过显示诊断打印（DISP_DEBUG=${DISP_DEBUG:-1}）"
+fi
+
+# ★★★ video mode 的 trigger-loop 点火（默认开）—— 死锁根因的直接修复
+#   背景（LOS 14.1 逆向确认，见 docs §8.19）：
+#     LOS 的 primary_display_suspend 不调用 _cmdq_stop_trigger_loop，
+#     trigger loop 全程不停，醒来不需要点火。
+#     我们的 suspend 无条件 _cmdq_stop_trigger_loop()，resume 重启 loop 后
+#     它卡在第一个等待事件上 -> ddp_dsi_start 清 START=0 -> 无 vsync/RDMA EOF
+#     -> ddp_dsi_trigger 不执行 -> START 永远 0（死锁）。
+#   而 _cmdq_start_trigger_loop 里 video mode 分支的点火代码被 #if 0 关掉了，
+#   MTK 自己在 cmd mode 那行写的注释是「第一次必须设 STREAM_EOF，否则卡死循环」。
+#   本补丁把那段 #if 0 取消，让 video mode 也在 path 空闲时补一次 MUTEX0_STREAM_EOF。
+if [ "${VDO_EOF_EVENT:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_vdo_eof_event.py" ]; then
+    echo "--- 启用 video mode 的 trigger-loop 点火（MUTEX0_STREAM_EOF）---"
+    "$PY" "$ROOT/scripts/patch_vdo_eof_event.py" . || die "video mode 点火补丁失败"
+else
+    echo "跳过 video mode 点火（VDO_EOF_EVENT=${VDO_EOF_EVENT:-1}）"
 fi
 
 
