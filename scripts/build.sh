@@ -84,7 +84,7 @@ for s in \
     patch_battery_qmax.py patch_battery_soc.py patch_battery_fgadc.py \
     patch_lcm_stock.py patch_lcm_init.py patch_lcm_table.py \
     patch_lcm_gpio_fix.py patch_lcm_init_table.py \
-    patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py patch_dsi_start_en.py \
+    patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
     patch_disp_debug.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
     patch_dimming_cmdmode.py patch_dimming_early.py patch_rst_new.py patch_stock_timing.py patch_lab_push.py \
     patch_lk_replay.py \
@@ -715,7 +715,7 @@ fi
 #        start 里这处属于无原厂依据的重复动作 → 移除。
 #   脚本幂等：找不到标记块安全跳过；只删 start 尾部那块，不动 trigger 的 DSI_Start。
 #   ⚠️ 2026-11-23 发现：源码里从来就没有那个标记块，所以本步实际是**空操作**，
-#      无论开关如何都不会增删 DSI_Start。默认改成 0，改用下面的 DSI_START_EN。
+#      无论开关如何都不会增删 DSI_Start。默认改成 0（本步实际为空操作）。
 if [ "${DSI_START_FIX:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_dsi_start.py" ]; then
     echo "--- 移除 ddp_dsi_start 自加的 DSI_Start()（对齐原厂）---"
     "$PY" "$ROOT/scripts/patch_dsi_start.py" . || die "移除自加 DSI_Start 失败"
@@ -723,23 +723,7 @@ else
     echo "跳过移除自加 DSI_Start（DSI_START_FIX=${DSI_START_FIX:-0}；该步实际为空操作）"
 fi
 
-# ★★★ 在 ddp_dsi_start 末尾【真正补一次】DSI_Start()（默认开）
-#   实测死锁链（2026-11-23，同一颗内核健康态 vs 唤醒黑屏态逐寄存器对比）：
-#     ddp_dsi_start 把 DSI_START 清 0，全函数不设回 1
-#       → DSI 不输出（start=0 sta=0 trig=0 hs_tx=1 ctl=1，对比健康态 1/0x20/0x440/16/16）
-#       → 没有 vsync / RDMA0 EOF
-#       → trigger loop 卡在 cmdqRecWait(CMDQ_EVENT_DISP_RDMA0_EOF)
-#       → 唯一置位 START 的 ddp_dsi_trigger 不执行
-#       → START 永远 0（闭环）
-#   而 _cmdq_start_trigger_loop() 在 video mode 下走空分支，不设初始事件，无人破环。
-#   开机不黑是因为 primary_display_resume() 的 is_ipoh_bootup 分支跳过 dpmgr_path_start，
-#   根本不调 ddp_dsi_start，START 保持 LK 设的 1。
-if [ "${DSI_START_EN:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_dsi_start_en.py" ]; then
-    echo "--- 在 ddp_dsi_start 末尾补 DSI_Start()（打破唤醒死锁）---"
-    "$PY" "$ROOT/scripts/patch_dsi_start_en.py" . || die "补 DSI_Start 失败"
-else
-    echo "跳过补 DSI_Start（DSI_START_EN=${DSI_START_EN:-1}）"
-fi
+
 
 
 # ★ 显示诊断打印（研究"熄屏唤醒后黑屏"用，默认开启）
