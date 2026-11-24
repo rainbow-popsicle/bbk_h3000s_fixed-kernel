@@ -53,9 +53,13 @@ on:
         type: boolean
         default: false
       dsi_start_fix:
-        description: '移除 ddp_dsi_start 尾部自加的 DSI_Start()（原厂反汇编纠错 §7.11；默认开=移除）'
+        description: '[空操作·可关] 移除 ddp_dsi_start 里的 DSI_Start()；实测源码里从没有那个标记块，开关无效果，已默认关'
         type: boolean
-        default: true
+        default: false
+      dsi_start_en:
+        description: '[已排除·默认关] 在 ddp_dsi_start 末尾补 DSI_Start()。§3 第6/14条 + 18:09 实验4 已证明 START=1 仍黑，仅保留作对照'
+        type: boolean
+        default: false
       dimming_early:
         description: '[默认关·先排除干扰] dimming(0x53/0x2C) 前移到 lcm_resume 在 CMD mode 同步推表；会多推一次表，验证 PLL 根因期间先关掉'
         type: boolean
@@ -69,9 +73,17 @@ on:
         type: boolean
         default: false
       stock_timing:
-        description: '★★核心修复：DSI 时序 40/40/4/200/200 + PLL_CLOCK 500（原驱动写死 395 是 sharp 时序的值，BOE 时序要多 21% 时钟）+ noncont_clock=1，全部对齐 LOS 14.1 实测（默认开，务必保持开）'
+        description: '★★核心修复：时序 40/40/4/200/200 + PLL_CLOCK 500 + noncont_clock=1 + vertical_vfp_lp=0(禁 idle 动态帧率) + ufoe_enable=0，全部对齐 LOS 14.1 实测（默认开，务必保持开）'
         type: boolean
         default: true
+      lcm_init_table:
+        description: '★★核心：让 lcm_init 做三级选表+推表（vendor id / pio89 电平 → 23/109 项），对齐 LOS 14.1；开机时 kernel 就推表而不是全靠 LK（默认开）'
+        type: boolean
+        default: true
+      lcm_esd_off:
+        description: '[默认关·对齐 LOS 14.1] 关闭面板 ESD 自检。LOS 14.1 的 ESD 是开的(need_do_esd_check=1)且能正常点亮，所以默认不再关它'
+        type: boolean
+        default: false
       sharp_tables:
         description: '[已作废·勿开] 换表方向无效，真正差异在时序参数（默认关）'
         type: boolean
@@ -151,11 +163,14 @@ jobs:
           VIDEO_KICK: ${{ (inputs.video_kick && '1') || '0' }}
           VMCMD: ${{ (inputs.vmcmd && '1') || '0' }}
           DSI_START_FIX: ${{ (inputs.dsi_start_fix && '1') || '0' }}
+          DSI_START_EN: ${{ (inputs.dsi_start_en && '1') || '0' }}
           DIMMING_CMDMODE: ${{ (inputs.dimming_cmdmode && '1') || '0' }}
           DIMMING_EARLY: ${{ (inputs.dimming_early && '1') || '0' }}
           RST_NEW_FIX: ${{ (inputs.rst_new_fix && '1') || '0' }}
           SHARP_TABLES: ${{ (inputs.sharp_tables && '1') || '0' }}
           STOCK_TIMING: ${{ (inputs.stock_timing && '1') || '0' }}
+          LCM_INIT_TABLE: ${{ (inputs.lcm_init_table && '1') || '0' }}
+          LCM_ESD_OFF: ${{ (inputs.lcm_esd_off && '1') || '0' }}
           LAB_PUSH: ${{ (inputs.lab_push && '1') || '0' }}
           LK_REPLAY: ${{ (inputs.lk_replay && '1') || '0' }}
           LCM_GPIO_FIX: ${{ (inputs.lcm_gpio_fix && '1') || '0' }}
