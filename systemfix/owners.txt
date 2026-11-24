@@ -1,0 +1,17 @@
+# 步步高 S3 Pro (h3000s) LineageOS 15.1 —— 属主补丁清单
+#
+# 格式:  <相对 /system 的路径>  <属主:属组>
+#
+# 为什么需要单独一份：
+#   manifest.txt 只管权限(0644/0755)，不记录属主。绝大多数文件是 root:root 没问题，
+#   但个别文件必须是特定属主——最典型的是 wpa_supplicant 必须是 root:shell。
+#
+# 历史教训：早期版本的安装脚本无条件 `chown 0:0`，把 wpa_supplicant 的属主
+#   改成了 root:root。功能上没坏（init 按 rc 里的 user/group 启动服务，
+#   不看文件属主），但和 ROM 原始状态不一致，属于必须修正的偏差。
+#
+# 安装时行为：
+#   · 本清单里列出的 → chown 到指定属主
+#   · 没列出的 → 【不 chown】，由 cp 保留原属主（新建文件默认 root:root）
+
+vendor/bin/hw/wpa_supplicant root:shell

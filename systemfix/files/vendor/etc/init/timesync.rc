@@ -1,0 +1,8 @@
+service timesync /system/bin/sh /system/etc/timesync.sh
+    class late_start
+    user root
+    oneshot
+    disabled
+
+on property:sys.boot_completed=1
+    start timesync

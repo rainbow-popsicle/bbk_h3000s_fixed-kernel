@@ -1,0 +1,12 @@
+# 步步高 S3 Pro (h3000s) LineageOS 15.1 —— 系统层修复包 删除清单
+#
+# 格式:  <相对 /system 的路径>   # 说明
+#
+# 有些“修复”不是加文件，而是【删掉】某个文件。最典型的是 TWRP 保持：
+#   /system/recovery-from-boot 是 AOSP 用来“开机时把 recovery 恢复成原厂”的脚本，
+#   保留它会把 TWRP 覆盖掉。ROM 制作者把它改名成 recovery-from-boot.bak（等于禁用），
+#   所以“本体不存在”本身就是修复状态。
+#
+# 安装时：先把它备份到备份目录，再删除。回退时从备份拷回即可。
+
+recovery-from-boot

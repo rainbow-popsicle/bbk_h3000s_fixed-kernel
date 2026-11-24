@@ -1,0 +1,26 @@
+# 步步高 S3 Pro (h3000s) LineageOS 15.1 —— 系统属性补丁清单
+#
+# 格式:  <属性文件相对 /system 的路径>  <键>  <值>
+#
+# 为什么按“键值”下发而不是整份替换 build.prop：
+#   整份替换要求 base ROM 与本机完全一致，换一个 ROM 版本就可能带进不匹配的属性；
+#   按键改更安全——存在则替换、不存在则追加，其余属性一律不动。
+#
+# 下面 4 条就是 /system/build.prop 相对原厂的全部差异（实机 diff 得出）。
+#
+# 注意：第一列是【相对 /system 的路径】，所以 build.prop 直接写 build.prop，
+#       不要写成 system/build.prop（否则会拼成 /system/system/build.prop）。
+#
+# 已知情况：原 build.prop 里 qemu.hw.mainkeys 有两行（历史遗留的追加），
+#           两行都是 1，行为无害；安装时 sed 会把两行都设成目标值，仍保持一致。
+
+# ⑦ 对齐设备指纹：原厂 7.0 的指纹会让部分应用/Play 服务判定机型不符
+build.prop ro.build.fingerprint EEBBK/lineage_h3000s/h3000s:8.1.0/OPM7.181205.001/3f164a9e37:userdebug/test-keys
+build.prop ro.build.description EEBBK/lineage_h3000s/h3000s:8.1.0/OPM7.181205.001/3f164a9e37:userdebug/test-keys
+
+# ① 底部三大金刚键：1 = 使用软件导航栏（配合内核的 GT911 触摸按键驱动）
+build.prop qemu.hw.mainkeys 1
+
+# 硬解调查副产品：关掉“安全视频路径”，消除 OMX 走 TEE 导致的 30 次重试风暴
+# （不影响实际解码能力——硬解在本移植上仍不可用，详见 docs/视频硬解调查全记录.md）
+build.prop ro.mtk_sec_video_path_support 0

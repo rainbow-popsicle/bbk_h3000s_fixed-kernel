@@ -1,0 +1,90 @@
+# 步步高 S3 Pro (h3000s) LineageOS 15.1 —— 系统层修复包 文件清单
+#
+# 格式: <权限> <字节数> <MD5> <相对 /system 的路径>
+#
+# 这份清单由实机 /system 自动采集（find -mtime -90，排除 *.bak / *.orig 备份），
+# 保证与“当前能正常使用的设备状态”逐字节一致。pack_systemfix.py 会校验 MD5。
+#
+# 已排除（因为内容与原版完全相同 / 或改用别的方式下发）：
+#   vendor/lib/libMtkOmxCore.so     内容与原版一致，只是 mtime 被 touch 过
+#   vendor/lib/libMtkOmxVdecEx.so   同上
+#   /system/build.prop              改为“键值补丁”下发，见 props.txt
+#   /system/etc/media_codecs*.xml   内容与原版一致，无需下发
+#
+#
+# 【由 .bak 反查补充的修复】以下文件的 mtime 是 ROM 构建时间（2009/2018），
+#   按 -mtime 扫描抓不到，是靠“有 .bak sibling 且内容不同”反查出来的：
+#     etc/permissions/platform.xml   —— 存储权限映射 gid(sdcard_r/rw/media_rw)，
+#                                        对应“app 访问不到文件”
+#     vendor/bin/hw/wpa_supplicant   —— 换过版本（2,079,232 → 2,160,244），
+#                                        对应“补 wifi 库”；注意属主是 root:shell，
+#                                        安装时不能改成 root:root
+
+644 9035 e5d8675d606e078ac598679dea825737 etc/permissions/platform.xml
+755 944 bd18abc35b5ccb6b0aee44bdf68bec37 etc/timesync.sh
+755 16224 bd311ea01f336534433c219e75d5a2c7 vendor/bin/hw/android.hardware.camera.provider@2.4-service
+755 2160244 bdae2d11d4304a9535ec73080112ba02 vendor/bin/hw/wpa_supplicant
+644 272 944931ce577e2e33dbe777ec3b0127a4 vendor/etc/init/android.hardware.camera.provider@2.4-service.rc
+644 168 a7640e12eb9330b531aa8753a35dee96 vendor/etc/init/timesync.rc
+644 110592 8aecbd63f26b3d41a3eb24861c9e4783 vendor/firmware/rgx.fw.signed
+644 85 f899fc703f9e35134e8b937254e1afb9 vendor/lib/egl/egl.cfg
+644 46684 7d1a50cae7e8e8403da4b242e0282872 vendor/lib/hw/camera.mt8173.so
+644 68644 d72e93e85672a6d1373729be7fd9c66d vendor/lib/hw/gralloc.mt8173.img.so
+644 177888 2486d6bd94ae78dc2b213a71fdc4ba61 vendor/lib/hw/hwcomposer.mt8173.so
+644 42648 1cdcdca7f902d0e1234e6955e2b39f24 vendor/lib/hw/keystore.mt8173.so
+644 13980 5ce22b56378963431999906cc68ec71c vendor/lib/hw/memtrack.mt8173.so
+644 177888 2486d6bd94ae78dc2b213a71fdc4ba61 vendor/lib/hwcomposer.mt8173.so
+644 22104 3bc1ac338d625f0ffb46513e338e5a96 vendor/lib/libgralloc_extra.so
+644 99940 af723f2384ec55240954dda40a01d391 vendor/lib/libgui_ext.so
+644 22320 20fe9de6edd1daaf7d9e2ac265a83910 vendor/lib/libmemtrack_GL.so
+644 21452 ca244c675f04fe156d9ddc9c7303ee0b vendor/lib/libstagefrighthw.so
+644 3284 4b44175243a4d0525af6ce1eefc775a0 vendor/lib/libui_shim.so
+644 74020 6f05436ba776ae29af5d617706b03e4e vendor/lib64/android.hardware.sensors@1.0-impl-mediatek.so
+644 85 f899fc703f9e35134e8b937254e1afb9 vendor/lib64/egl/egl.cfg
+644 188680 804036b131f516763b99fb063cc679a1 vendor/lib64/hw/android.hardware.camera.provider@2.4-impl.so
+644 594216 3915a1db92c48148489251a2e347a011 vendor/lib64/hw/audio.primary.mt8173.so
+644 55424 f98f0c5f66c451437afc242d2d221138 vendor/lib64/hw/camera.mt8173.so
+644 90496 4f6a90ebd16eef416b75f7831a6ceb31 vendor/lib64/hw/gralloc.mt8173.img.so
+644 248184 61b97f7a1879898a6169634743250973 vendor/lib64/hw/hwcomposer.mt8173.so
+644 55576 c8dbb5a35e5eeff431499b428071bfde vendor/lib64/hw/keystore.mt8173.so
+644 9897912 de7a70864c071fb10850ebef0e31138d vendor/lib64/hw/libcameracustom.so
+644 10448 03674f2fd0cef5ab0d5c62ded37a27ba vendor/lib64/hw/memtrack.mt8173.so
+644 248184 61b97f7a1879898a6169634743250973 vendor/lib64/hwcomposer.mt8173.so
+644 13844 401d04f8668d69a0721bca386ddd1d2c vendor/lib64/libbt-vendor.so
+644 612520 bc2df12cd90368056c4051608cd12d66 vendor/lib64/libcam.camadapter.so
+644 485488 0752d6c198dc792bf3a81e9b1377a816 vendor/lib64/libcam.camnode.so
+644 288864 ac04cd2f3a0e7470e8716d1b18a418df vendor/lib64/libcam.camshot.so
+644 251936 469fd4157704bc6591039bb8ebbde9c5 vendor/lib64/libcam.client.so
+644 92112 082828894b1c49f7fb2ed7a1f2b00e43 vendor/lib64/libcam.device1.so
+644 63440 f84d73b85bc19f560490a47ff2ab7bf3 vendor/lib64/libcam.device3.so
+644 67616 70d1dcc9bb7bf149355bfa5ca68cb9c2 vendor/lib64/libcam.exif.so
+644 63440 a89690968216d8bedffd1a9a6ce6b59f vendor/lib64/libcam.exif.v3.so
+644 14360 7b796f260f3fdb3e6d738407ca4afedb vendor/lib64/libcam.hal3a.v3.dng.so
+644 1018008 c618880aa44656334940ecc08e58e0a6 vendor/lib64/libcam.hal3a.v3.so
+644 231528 2e28f249e6b2662c9a89a310760a60f6 vendor/lib64/libcam.halsensor.so
+644 282600 01fcc3f549bdf5fd291bdcf2ce557377 vendor/lib64/libcam.iopipe.so
+644 112664 e5a5adaa0476651978c5d4bed2e8040b vendor/lib64/libcam.metadata.so
+644 202848 9520da121fedb71a300b62c17a80953f vendor/lib64/libcam.metadataprovider.so
+644 313440 2cd59ede73c9c88ca8a9cd7310c51b3d vendor/lib64/libcam.paramsmgr.so
+644 22624 1ea8bcd5112e0e3eec19f132959554a4 vendor/lib64/libcam.utils.sensorlistener.so
+644 47128 f4918a864dd8a2bb13cf14932252e05f vendor/lib64/libcam.utils.so
+644 30672 77fe95872744121076f04e8bff2c4d25 vendor/lib64/libcam1_utils.so
+644 215136 1f2fcc5a5f0e8503de070f678701e5d9 vendor/lib64/libcam3_app.so
+644 280600 74e81cf60a367f7c6331f4332d9cef69 vendor/lib64/libcam3_hwnode.so
+644 190416 04679d4074c73e9a127c399118c36fee vendor/lib64/libcam3_hwpipeline.so
+644 169936 00f56c27433ef1495230a75be404fb39 vendor/lib64/libcam3_pipeline.so
+644 194584 98b2f5d2d355fde837a445b253947073 vendor/lib64/libcam3_utils.so
+644 10264 2adedf0ee26c57ae1231abe98ff9f9fa vendor/lib64/libcam_hwutils.so
+644 6016 516b10d8c276d790fd2f37e8e1ae3676 vendor/lib64/libcam_mmp.so
+644 10344 d9e884cf443df1ca628f855a348de1fc vendor/lib64/libcam_platform.so
+644 170080 45f22e60ecd07d5506ea1e51fcfbe582 vendor/lib64/libcam_utils.so
+644 6568840 c0177138dddc94f3cffaa8a6cfd01e57 vendor/lib64/libcamalgo.so
+644 238528 4ad355382f7c281dac407c360e4cf892 vendor/lib64/libcamdrv.so
+644 9897912 de7a70864c071fb10850ebef0e31138d vendor/lib64/libcameracustom.so
+644 22568 08f206ead228e629678fc02068553de3 vendor/lib64/libgralloc_extra.so
+644 129168 adae002fee55e7033b1220042e81daf9 vendor/lib64/libgui_ext.so
+644 53256 0e4e9ba7e823fc486dc30548c6b394b3 vendor/lib64/libsensorndkbridge.so
+644 237848 96b9b4ef75f40c6c184cf13802c4551b vendor/lib64/sensors.mt8173.so
+644 20488 dca7d6d813b1a585dc8bb94dd084b0af vendor/lib64/vendor.mediatek.hardware.camera.ccap@1.0-impl.so
+644 94224 859a1ed37489acba00d842b518753d41 vendor/lib64/vendor.mediatek.hardware.camera.ccap@1.0_vendor.so
+644 221208 f93f94e5a9fd56f96ef54d664491e4a4 vendor/lib64/vendor.mediatek.hardware.camera.device@1.1_vendor.so
