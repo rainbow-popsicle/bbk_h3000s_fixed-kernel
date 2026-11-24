@@ -56,10 +56,7 @@ on:
         description: '[空操作·可关] 移除 ddp_dsi_start 里的 DSI_Start()；实测源码里从没有那个标记块，开关无效果，已默认关'
         type: boolean
         default: false
-      dsi_start_en:
-        description: '[已排除·默认关] 在 ddp_dsi_start 末尾补 DSI_Start()。§3 第6/14条 + 18:09 实验4 已证明 START=1 仍黑，仅保留作对照'
-        type: boolean
-        default: false
+      
       dimming_early:
         description: '[默认关·先排除干扰] dimming(0x53/0x2C) 前移到 lcm_resume 在 CMD mode 同步推表；会多推一次表，验证 PLL 根因期间先关掉'
         type: boolean
@@ -163,7 +160,6 @@ jobs:
           VIDEO_KICK: ${{ (inputs.video_kick && '1') || '0' }}
           VMCMD: ${{ (inputs.vmcmd && '1') || '0' }}
           DSI_START_FIX: ${{ (inputs.dsi_start_fix && '1') || '0' }}
-          DSI_START_EN: ${{ (inputs.dsi_start_en && '1') || '0' }}
           DIMMING_CMDMODE: ${{ (inputs.dimming_cmdmode && '1') || '0' }}
           DIMMING_EARLY: ${{ (inputs.dimming_early && '1') || '0' }}
           RST_NEW_FIX: ${{ (inputs.rst_new_fix && '1') || '0' }}
