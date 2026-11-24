@@ -106,7 +106,7 @@ NEW = '''	if (dsi_config->mode != CMD_MODE
 		 *   dpmgr_path_trigger -> ddp_dsi_trigger -> DSI_Start 就能把 DSI_START 重新置 1，
 		 *   之后靠真实 vsync 自持。
 		 *   反之（本补丁关闭时）DSI 从不输出 -> 53 永不来 -> 两个队列全卡 -> 死锁。 */
-		pr_alert("[S3PRO_DSI_CFG_START] dsi_config video branch: DSI_Start then VDO timing\n");
+		pr_alert("[S3PRO_DSI_CFG_START] dsi_config video branch: DSI_Start then VDO timing\\n");
 		DSI_Start(module, cmdq);
 		DSI_Config_VDO_Timing(module, cmdq, dsi_config);
 		DSI_Set_VM_CMD(module, cmdq);
