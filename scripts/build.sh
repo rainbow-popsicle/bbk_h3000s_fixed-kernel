@@ -91,7 +91,7 @@ for s in \
     patch_video_kick.py patch_vmcmd.py \
     patch_cm36686_i2c.py patch_cm36686_dts.py \
     patch_alsps_eint.py patch_alsps_ap3220.py patch_alsps_abs.py \
-    patch_vcodec_irq.py \
+    patch_vcodec_irq.py patch_vcodec_clk.py patch_bt_bluez.py \
     patch_ramdisk.py \
     bootimg.py
 do
@@ -1391,6 +1391,51 @@ for cand in "arch/arm64/boot/$KERNEL_TARGET" \
 done
 [ -n "$IMG" ] || die "找不到编出来的内核镜像"
 echo "产物: $IMG ($(stat -c%s "$IMG") 字节)"
+
+# --------------------------------------------------------------------------- #
+# ★ 验证关键补丁的标记是否真的进入了内核镜像（防「编译通过但补丁没生效」）
+#
+#   动机（2026-11-24 实测）：patch_vdo_eof_event.py 打了、CI 绿了、内核也编出来了，
+#   但运行时 dpmgr_path_is_idle() 把点火挡住，trig 仍是 0 —— 编译期完全看不出。
+#   为了至少有「补丁有没有被编进去」这一层保证，这里用 pr_alert 里的
+#   "[S3PRO_XXX]" 字符串做静态验证：
+#       标记不在镜像里  = 补丁根本没生效 -> 直接 die（不让坏包流出去）
+#       标记在镜像里    = 补丁代码确实编进去了（运行时是否起作用仍需 dmesg 判据）
+#
+#   只检查【当前开启的】补丁，关掉的补丁当然不会有标记。
+CHECK_MARKS=""
+[ "${LCM_INIT_TABLE:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_LCM_INIT"
+[ "${STOCK_TIMING:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_TMG"
+[ "${LK_REPLAY:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_LKREPLAY"
+[ "${NO_STOP_LOOP:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_NO_STOP_LOOP"
+[ "${VDO_EOF_EVENT:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_VDO_EOF"
+[ "${DSI_CFG_START:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_DSI_CFG_START"
+
+if [ -n "$CHECK_MARKS" ]; then
+    echo "--- 验证补丁标记是否进入内核镜像 ---"
+    # 镜像可能是 Image / Image.gz / Image.gz-dtb，按 gzip 魔数(1f8b)判断是否需要解压；
+    # gz-dtb 尾部追加了 DTB，gzip -dc 会解出内核部分后报错，|| true 吞掉即可。
+    UNPACKED="$WORK/kernel_unpacked"
+    _magic="$(od -An -tx1 -N2 "$IMG" 2>/dev/null | tr -d ' \n')"
+    if [ "$_magic" = "1f8b" ]; then
+        gzip -dc "$IMG" > "$UNPACKED" 2>/dev/null || true
+    else
+        cp "$IMG" "$UNPACKED"
+    fi
+    MISS_MARK=""
+    for m in $CHECK_MARKS; do
+        if grep -qa -- "$m" "$UNPACKED" 2>/dev/null; then
+            echo "  [OK]   $m"
+        else
+            echo "  [MISS] $m"
+            MISS_MARK="$MISS_MARK $m"
+        fi
+    done
+    # 只保留解压副本到打包结束，之后清掉避免产物变大
+    if [ -n "$MISS_MARK" ]; then
+        die "以下补丁标记未进入内核镜像（补丁没生效）：$MISS_MARK"
+    fi
+fi
 
 # --------------------------------------------------------------------------- #
 step "6/6 打包回 boot.img"

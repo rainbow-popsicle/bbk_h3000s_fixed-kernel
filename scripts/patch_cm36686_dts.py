@@ -76,11 +76,22 @@ NEW = """\t/* S3PRO: 本机 DTB 里 alsps 节点的 compatible 是 "mediatek,als
 \t}"""
 
 # alsps_cust 的静态初始化（I2C-8 @ 0x1C，与 DTB 里 alsps@1c 一致）
+# 标定表取自本机 DTB 的 /cust_alsps@0（compatible = "mediatek,AP3220"）真实值：
+#   als_level = <0x00 0x0a 0x28 0x12c 0xb54 0x157c 0x3a98 0x4e20 0x6590 0xffff ...>
+#   als_value = <0x00 0x08 0x0a 0xa0 0xe1 0x140 0x280 0x500 0xa28 0x2800 ...>
+#   ps_threshold_high = 0x2a8, ps_threshold_low = 0x78
+# 结构体里 als_level 只有 C_CUST_ALS_LEVEL-1 = 15 项、als_value 16 项，
+# 所以按 DTB 顺序截断到对应长度。
 CUST_OLD = "struct alsps_hw alsps_cust;"
 CUST_NEW = """/* S3PRO: 原本这里只是一个未初始化的全局变量（全零），
  * DTS 查找失败后拿它去 probe 必然因为 i2c_num=0 而失败。
- * 按实测填上：光感挂在 i2c-8，7 位地址 0x1C。
- * 阈值暂用保守默认值，等驱动跑起来后再校准。 */
+ *
+ * 各字段来源：
+ *   i2c_num/i2c_addr —— 裸 syscall 探针实测：i2c-4..9 中只有 bus 8 的 0x1c 有 ACK
+ *   als_level/als_value/ps_threshold —— 取自本机 DTB 的 /cust_alsps@0 真实值
+ *   polling_mode_* —— ALS 走定时器轮询（核心层 mod_timer 实现），PS 也走轮询，
+ *                     这样即使 EINT 建不起来，两个传感器仍然能出数据
+ */
 struct alsps_hw alsps_cust = {
 \t.i2c_num = 8,
 \t.power_id = -1,
@@ -88,14 +99,14 @@ struct alsps_hw alsps_cust = {
 \t.polling_mode = 1,
 \t.polling_mode_ps = 1,
 \t.polling_mode_als = 1,
-\t.i2c_addr = {0x1C, 0, 0, 0},
-\t.als_level = {0, 328, 861, 1377, 3116, 4230, 4744, 4896,
-\t\t      5129, 5829, 6395, 6975, 8109, 9296, 10800},
-\t.als_value = {0, 10, 40, 100, 180, 280, 400, 550,
-\t\t      700, 900, 1200, 1500, 1900, 2400, 3000, 4000},
-\t.ps_threshold = 0x60,
-\t.ps_threshold_high = 0x60,
-\t.ps_threshold_low = 0x40,
+\t.i2c_addr = {0x1C, 0x48, 0x78, 0x00},
+\t.als_level = {0, 10, 40, 300, 2900, 5500, 15000, 20000,
+\t\t      26000, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF},
+\t.als_value = {0, 8, 10, 160, 225, 320, 640, 1280,
+\t\t      2600, 10240, 10240, 10240, 10240, 10240, 10240, 10240},
+\t.ps_threshold = 0x2A8,
+\t.ps_threshold_high = 0x2A8,
+\t.ps_threshold_low = 0x78,
 \t.als_threshold_high = 0xFFFF,
 \t.als_threshold_low = 0x0,
 \t.als_window_loss = 0,
