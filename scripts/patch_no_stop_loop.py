@@ -57,12 +57,14 @@ import sys
 
 MARK = "S3PRO_NO_STOP_LOOP"
 
-# 锚点包含前后 DISPCHECK，确保只匹配 primary_display_suspend 里那一处
-OLD = '''	DISPCHECK("[POWER]display cmdq trigger loop stop[begin]\\n");
-	_cmdq_stop_trigger_loop();
-	DISPCHECK("[POWER]display cmdq trigger loop stop[end]\\n");'''
+# 锚点策略：不用「三行连续文本」，改为「定位 primary_display_suspend 函数体，
+# 再找其中唯一的 _cmdq_stop_trigger_loop();」。
+# 原因：patch_disp_debug.py 会在 DISPCHECK("...stop[begin]...") 之后插入
+# S3PRO_LCM_EARLY_SUSPEND 一大段（把 disp_lcm_suspend 提前），三行连续锚点因此失效。
+FUNC_SIG = "int primary_display_suspend(void)"
+TARGET = "_cmdq_stop_trigger_loop();"
 
-NEW = '''	/* S3PRO_NO_STOP_LOOP: 不停 CMDQ trigger loop（对齐 LOS 14.1）。
+REPLACE = '''	/* S3PRO_NO_STOP_LOOP: 不停 CMDQ trigger loop（对齐 LOS 14.1）。
 	 *
 	 * LOS 14.1 的 primary_display_suspend @0x4a8e0c 全程不调用
 	 * _cmdq_stop_trigger_loop(0x49e0b4)，只清 pgc[+0x3d0]；trigger loop 一直活着。
@@ -113,6 +115,46 @@ def brace_balance(s):
     return depth
 
 
+def find_func_body(text, sig):
+    """定位 sig 对应函数的体范围 (start, end)，end 为闭合大括号之后。
+
+    用大括号配对，能容忍函数体内被其它补丁插入的任意代码。
+    """
+    i = text.find(sig)
+    if i < 0:
+        return None
+    j = text.find("{", i + len(sig))
+    if j < 0:
+        return None
+    depth = 0
+    k = j
+    n = len(text)
+    while k < n:
+        c = text[k]
+        if c == '"':
+            k += 1
+            while k < n:
+                if text[k] == "\\":
+                    k += 2
+                    continue
+                if text[k] == '"':
+                    break
+                k += 1
+        elif c == "/" and k + 1 < n and text[k + 1] == "*":
+            k += 2
+            while k + 1 < n and not (text[k] == "*" and text[k + 1] == "/"):
+                k += 1
+            k += 1
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return (i, k + 1)
+        k += 1
+    return None
+
+
 def main():
     if len(sys.argv) < 2:
         raise SystemExit(__doc__)
@@ -131,14 +173,26 @@ def main():
         print("  已打过 S3PRO_NO_STOP_LOOP，跳过")
         return 0
 
-    cnt = t.count(OLD)
+    rng = find_func_body(t, FUNC_SIG)
+    if not rng:
+        print("!! 找不到 %s 的函数体，中止" % FUNC_SIG)
+        return 1
+    fs, fe = rng
+    body = t[fs:fe]
+
+    cnt = body.count(TARGET)
     if cnt != 1:
-        print("!! 锚点匹配 %d 次（应为 1），中止" % cnt)
-        print("   （primary_display_suspend 里的 stop trigger loop 段可能变了）")
+        print("!! primary_display_suspend 函数体内 %s 出现 %d 次（应为 1），中止" % (TARGET, cnt))
         return 1
 
-    t = t.replace(OLD, NEW, 1)
-    print("  已让 primary_display_suspend 不停 trigger loop")
+    old_line = "\t" + TARGET
+    if body.count(old_line) != 1:
+        print("!! %s 的带缩进形式匹配 %d 次（应为 1），中止" % (TARGET, body.count(old_line)))
+        return 1
+
+    new_body = body.replace(old_line, REPLACE, 1)
+    t = t[:fs] + new_body + t[fe:]
+    print("  已让 primary_display_suspend 不停 trigger loop（函数定位法）")
 
     if dry:
         print("\n  [dry-run] 未写文件")
@@ -147,10 +201,13 @@ def main():
     open(path, "w", encoding="utf-8", errors="surrogateescape", newline="").write(t)
 
     c = open(path, encoding="utf-8", errors="surrogateescape").read()
+    rng2 = find_func_body(c, FUNC_SIG)
+    body2 = c[rng2[0]:rng2[1]] if rng2 else ""
     checks = {
         "标记存在": MARK in c,
         "stop 调用已被注释": "/* _cmdq_stop_trigger_loop();" in c,
         "带 pr_alert": "[S3PRO_NO_STOP_LOOP] keep cmdq trigger loop alive" in c,
+        "suspend 函数体内已无 stop 调用": "\t_cmdq_stop_trigger_loop();" not in body2,
         "其他 stop 调用仍在": c.count("_cmdq_stop_trigger_loop();") >= 3,
         "花括号配平": brace_balance(c) == 0,
     }
