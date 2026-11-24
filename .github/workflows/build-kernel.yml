@@ -73,6 +73,14 @@ on:
         description: '★★核心修复：时序 40/40/4/200/200 + PLL_CLOCK 500 + noncont_clock=1 + vertical_vfp_lp=0(禁 idle 动态帧率) + ufoe_enable=0，全部对齐 LOS 14.1 实测（默认开，务必保持开）'
         type: boolean
         default: true
+      dsi_config_start:
+        description: '★★★★核心：ddp_dsi_config 的 video 分支补 DSI_Start（LOS 14.1 @0x479304 实测有）。这是死锁的第一推动：让 DSI 真实输出一帧产生 MUTEX0_STREAM_EOF(53)，放行 config 队列和 trigger loop（默认开）'
+        type: boolean
+        default: true
+      no_stop_loop:
+        description: '★★★核心：让 primary_display_suspend 不再停 CMDQ trigger loop（LOS 14.1 逆向确认它不停）。停掉后 resume 重启的 loop 卡在 cmdqRecWait(MUTEX0_STREAM_EOF) 上死锁（默认开）'
+        type: boolean
+        default: true
       vdo_eof_event:
         description: '★★★核心：启用 video mode 的 trigger-loop 点火（MUTEX0_STREAM_EOF）。LOS 14.1 的 suspend 不停 loop 所以无需点火，我们的 suspend 停了 loop，video mode 的点火又被 #if 0 掐了 → 死锁（默认开）'
         type: boolean
@@ -82,9 +90,9 @@ on:
         type: boolean
         default: true
       lcm_esd_off:
-        description: '[默认关·对齐 LOS 14.1] 关闭面板 ESD 自检。LOS 14.1 的 ESD 是开的(need_do_esd_check=1)且能正常点亮，所以默认不再关它'
+        description: '[默认开·临时] 关闭面板 ESD 自检。LOS 14.1 的 ESD 是开的且正常，但我们的显示异常时 display_esd_che 会反复 esd_recovery 干扰点火验证；显示修好后应关掉此项恢复对齐'
         type: boolean
-        default: false
+        default: true
       sharp_tables:
         description: '[已作废·勿开] 换表方向无效，真正差异在时序参数（默认关）'
         type: boolean
@@ -169,6 +177,8 @@ jobs:
           RST_NEW_FIX: ${{ (inputs.rst_new_fix && '1') || '0' }}
           SHARP_TABLES: ${{ (inputs.sharp_tables && '1') || '0' }}
           STOCK_TIMING: ${{ (inputs.stock_timing && '1') || '0' }}
+          DSI_CFG_START: ${{ (inputs.dsi_config_start && '1') || '0' }}
+          NO_STOP_LOOP: ${{ (inputs.no_stop_loop && '1') || '0' }}
           VDO_EOF_EVENT: ${{ (inputs.vdo_eof_event && '1') || '0' }}
           LCM_INIT_TABLE: ${{ (inputs.lcm_init_table && '1') || '0' }}
           LCM_ESD_OFF: ${{ (inputs.lcm_esd_off && '1') || '0' }}
