@@ -251,9 +251,107 @@ def check_preflight(fail):
         print("  [ OK ] 没有死补丁")
 
 
+def _strip_c_comments(text):
+    """去掉 C 的块注释和行注释（块注释要跨行处理）。"""
+    out = []
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            # 字符串原样保留
+            out.append(c)
+            i += 1
+            while i < n:
+                if text[i] == "\\" and i + 1 < n:
+                    out.append(text[i:i + 2])
+                    i += 2
+                    continue
+                out.append(text[i])
+                if text[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 2
+            # 用换行占位，保持行数
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def check_c_strings(fail):
+    """补丁生成的 C 代码里，字符串字面量必须单行闭合。
+
+    背景（2026-11-24 编译挂）：patch_dsi_config_start.py 里的 pr_alert 字符串
+    写成 "…timing\\n") 少了一个反斜杠，Python 解析后 \n 变成真换行，
+    生成的 C 代码成了跨行字符串：
+        pr_alert("[S3PRO_DSI_CFG_START] …timing
+        ");
+    编译直接 error: missing terminating " character。
+    test_panel_patch_chain.py 只查花括号配平，查不出这种，所以在这里补一道。
+    """
+    import importlib.util
+
+    print("\n--- 4) 补丁生成的 C 代码：字符串必须单行闭合 ---")
+    targets = [
+        "patch_lcm_init_table.py", "patch_stock_timing.py", "patch_lk_replay.py",
+        "patch_no_stop_loop.py", "patch_vdo_eof_event.py", "patch_dsi_config_start.py",
+    ]
+    bad = []
+    for name in targets:
+        path = os.path.join(SCRIPTS, name)
+        if not os.path.exists(path):
+            continue
+        modname = "pm_" + name[:-3]
+        try:
+            spec = importlib.util.spec_from_file_location(modname, path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        except Exception as exc:                       # noqa: BLE001
+            print("  [FAIL] %-30s import 失败: %s" % (name, exc))
+            fail.append("%s import 失败" % name)
+            continue
+
+        for attr in ("NEW", "REPLACE", "IMPL"):
+            val = getattr(mod, attr, None)
+            if not isinstance(val, str):
+                continue
+            stripped = _strip_c_comments(val)
+            for ln_no, ln in enumerate(stripped.split("\n"), 1):
+                # 数未转义的双引号，奇数 = 没闭合
+                cnt = 0
+                k = 0
+                while k < len(ln):
+                    if ln[k] == "\\" and k + 1 < len(ln):
+                        k += 2
+                        continue
+                    if ln[k] == '"':
+                        cnt += 1
+                    k += 1
+                if cnt % 2 != 0:
+                    bad.append((name, attr, ln_no, ln.strip()[:70]))
+
+    if bad:
+        for name, attr, ln_no, txt in bad:
+            print("  [FAIL] %-30s %s 第%d行引号未闭合: %s" % (name, attr, ln_no, txt))
+            fail.append("%s.%s 第%d行字符串跨行" % (name, attr, ln_no))
+    else:
+        print("  [ OK ] 6 个关键补丁的 C 代码字符串全部单行闭合")
+
+
 def check_resources(fail):
     """build.sh 引用的外部资源文件（预检和标记检查都覆盖不到的那一类）。"""
-    print("\n--- 4) build.sh 引用的外部资源 ---")
+    print("\n--- 5) build.sh 引用的外部资源 ---")
 
     # 4a) 必需资源
     for rel, desc in sorted(REQUIRED_RESOURCES.items()):
@@ -292,6 +390,7 @@ def main():
     check_marks(fail)
     check_driver_files(fail)
     check_preflight(fail)
+    check_c_strings(fail)
     check_resources(fail)
 
     print("\n" + "=" * 60)
@@ -300,7 +399,7 @@ def main():
         for f in fail:
             print("    - %s" % f)
         return 1
-    print("  结果：PASS —— 标记可验证 / 驱动清单一致 / 预检无遗漏 / 资源齐全")
+    print("  结果：PASS —— 标记可验证 / 驱动清单一致 / 预检无遗漏 / 字符串闭合 / 资源齐全")
     return 0
 
 
