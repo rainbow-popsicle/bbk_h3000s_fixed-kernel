@@ -62,6 +62,7 @@ REQUIRED_MARKS = {
     "patch_no_stop_loop.py": "S3PRO_NO_STOP_LOOP",
     "patch_vdo_eof_event.py": "S3PRO_VDO_EOF",
     "patch_dsi_config_start.py": "S3PRO_DSI_CFG_START",
+    "patch_resume_no_wait_token.py": "S3PRO_NO_WAIT_TOKEN",
 }
 
 # 驱动目录 Makefile（复制自内核树 drivers/misc/mediatek/lcm/<panel>/Makefile）
@@ -306,6 +307,7 @@ def check_c_strings(fail):
     targets = [
         "patch_lcm_init_table.py", "patch_stock_timing.py", "patch_lk_replay.py",
         "patch_no_stop_loop.py", "patch_vdo_eof_event.py", "patch_dsi_config_start.py",
+        "patch_resume_no_wait_token.py",
     ]
     bad = []
     for name in targets:
