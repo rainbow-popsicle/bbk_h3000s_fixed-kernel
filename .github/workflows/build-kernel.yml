@@ -44,33 +44,9 @@ on:
         description: 'read_id 面板回读探针（切CMD回读0x0A/ID；切模式函数由默认开启的 DISP_DEBUG 提供；默认关）'
         type: boolean
         default: false
-      video_kick:
-        description: 'video_kick 诊断节点（黑屏态强制触发视频流，验证 trigger loop 死锁；依赖 DISP_DEBUG；默认关）'
-        type: boolean
-        default: false
-      vmcmd:
-        description: 'vmcmd 诊断节点（清 DSI_START 的 VM_CMD_START bit16 悬挂；黑屏态 echo snap/clr/restart；默认关）'
-        type: boolean
-        default: false
-      dsi_start_fix:
-        description: '[空操作·可关] 移除 ddp_dsi_start 里的 DSI_Start()；实测源码里从没有那个标记块，开关无效果，已默认关'
-        type: boolean
-        default: false
 
-      dimming_early:
-        description: '[默认关·先排除干扰] dimming(0x53/0x2C) 前移到 lcm_resume 在 CMD mode 同步推表；会多推一次表，验证 PLL 根因期间先关掉'
-        type: boolean
-        default: false
-      dimming_cmdmode:
-        description: '[已证伪·勿开] 旧方案：CPU 裸写 MODE 切 CMD 推 dimming，会触发 CMDQ 风暴；与 dimming_early 互斥（默认关）'
-        type: boolean
-        default: false
-      rst_new_fix:
-        description: '[已证伪·可关] 补回 RST_EN_NEW(pio6397)：实测两个 RST 都是 1016 同一脚，空操作（默认关）'
-        type: boolean
-        default: false
       stock_timing:
-        description: '★★核心修复：时序 40/40/4/200/200 + PLL_CLOCK 500 + noncont_clock=1 + vertical_vfp_lp=0(禁 idle 动态帧率) + ufoe_enable=0，全部对齐 LOS 14.1 实测（默认开，务必保持开）'
+        description: '★★核心修复：时序 40/40/4/200/200 + PLL_CLOCK 500 + noncont_clock=1 + vertical_vfp_lp=0(禁 idle 动态帧率) + ufoe_enable=1(与 LOS 实测一致)，全部对齐 LOS 14.1 实测（默认开，务必保持开）'
         type: boolean
         default: true
       resume_no_wait_token:
@@ -97,10 +73,6 @@ on:
         description: '[默认开·临时] 关闭面板 ESD 自检。LOS 14.1 的 ESD 是开的且正常，但我们的显示异常时 display_esd_che 会反复 esd_recovery 干扰点火验证；显示修好后应关掉此项恢复对齐'
         type: boolean
         default: true
-      sharp_tables:
-        description: '[已作废·勿开] 换表方向无效，真正差异在时序参数（默认关）'
-        type: boolean
-        default: false
       lab_push:
         description: '在线重推表实验台：刷机后 echo 0x9999/0x9998/0x9997 > fb_dispparam 可在线推表，免重刷（默认关）'
         type: boolean
@@ -109,10 +81,6 @@ on:
         description: '★时序实验台：debugfs 切 上电顺序(variant 0-4)/三个复位延时/vsn_dly/repeat/table/no_power，一次刷机做受控实验，改完下次熄屏唤醒即生效（默认开）'
         type: boolean
         default: true
-      lcm_gpio_fix:
-        description: '[默认关·已由前置 sed 覆盖] 面板 GPIO 补丁：node/属性名两级回退；build.sh 里已有等价 sed，重复会因锚点不匹配而失败'
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -175,13 +143,6 @@ jobs:
           LCM_TRACE: ${{ (inputs.lcm_trace && '1') || '0' }}
           LCM_POWER_SEQ: ${{ (inputs.lcm_power_seq && '1') || '0' }}
           LCM_READID: ${{ (inputs.lcm_readid && '1') || '0' }}
-          VIDEO_KICK: ${{ (inputs.video_kick && '1') || '0' }}
-          VMCMD: ${{ (inputs.vmcmd && '1') || '0' }}
-          DSI_START_FIX: ${{ (inputs.dsi_start_fix && '1') || '0' }}
-          DIMMING_CMDMODE: ${{ (inputs.dimming_cmdmode && '1') || '0' }}
-          DIMMING_EARLY: ${{ (inputs.dimming_early && '1') || '0' }}
-          RST_NEW_FIX: ${{ (inputs.rst_new_fix && '1') || '0' }}
-          SHARP_TABLES: ${{ (inputs.sharp_tables && '1') || '0' }}
           STOCK_TIMING: ${{ (inputs.stock_timing && '1') || '0' }}
           RESUME_NO_WAIT_TOKEN: ${{ (inputs.resume_no_wait_token && '1') || '0' }}
           DSI_CFG_START: ${{ (inputs.dsi_config_start && '1') || '0' }}
@@ -191,7 +152,6 @@ jobs:
           LCM_ESD_OFF: ${{ (inputs.lcm_esd_off && '1') || '0' }}
           LAB_PUSH: ${{ (inputs.lab_push && '1') || '0' }}
           LK_REPLAY: ${{ (inputs.lk_replay && '1') || '0' }}
-          LCM_GPIO_FIX: ${{ (inputs.lcm_gpio_fix && '1') || '0' }}
         run: bash scripts/build.sh
 
       - name: 上传产物
