@@ -54,9 +54,9 @@ on:
         type: boolean
         default: true
       dsi_config_start:
-        description: '★★★★核心：ddp_dsi_config 的 video 分支补 DSI_Start（LOS 14.1 @0x479304 实测有）。这是死锁的第一推动：让 DSI 真实输出一帧产生 MUTEX0_STREAM_EOF(53)，放行 config 队列和 trigger loop（默认开）'
+        description: '[已证伪·默认关] 在 ddp_dsi_config 出口补 DSI_Start。2026-11-25 实测：config 阶段 DSI_MODE_CTRL.MODE 还是 CMD(0)，此时启动 DSI 会让它进入 busy，而 _dsi_is_video_mode() 读寄存器返回 0 → DSI_WaitForNotBusy 走等待路径超时 #572 次；更严重的是 ddp_dsi_stop 里两个 while(1) 死等 busy 清除 → dsi1 is busy 反复打印 → suspend 卡死 → 黑屏。必须关闭'
         type: boolean
-        default: true
+        default: false
       no_stop_loop:
         description: '★★★核心：让 primary_display_suspend 不再停 CMDQ trigger loop（LOS 14.1 逆向确认它不停）。停掉后 resume 重启的 loop 卡在 cmdqRecWait(MUTEX0_STREAM_EOF) 上死锁（默认开）'
         type: boolean
