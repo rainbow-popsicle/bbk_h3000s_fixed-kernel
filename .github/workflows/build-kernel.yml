@@ -41,9 +41,9 @@ on:
         type: boolean
         default: false
       lcm_readid:
-        description: 'read_id 面板回读探针（切CMD回读0x0A/ID；切模式函数由默认开启的 DISP_DEBUG 提供；默认关）'
+        description: '面板回读探针 mtk_lcm_s3pro_readback（切 CMD 后读 0x0A/0xDA/0xDB，读完切回）。用它可一刀切判断「面板到底还能不能通信」：0x0A 读回 0x9C=面板正常，0x00=面板没电/没初始化。黑屏排查期间建议保持开启（默认开）'
         type: boolean
-        default: false
+        default: true
 
       stock_timing:
         description: '★★核心修复：时序 40/40/4/200/200 + PLL_CLOCK 500 + noncont_clock=1 + vertical_vfp_lp=0(禁 idle 动态帧率) + ufoe_enable=1(与 LOS 实测一致)，全部对齐 LOS 14.1 实测（默认开，务必保持开）'
