@@ -143,6 +143,61 @@ void s3pro_path_regs(const char *tag)
 		 INREG32(&DSI_REG[0]->DSI_VM_CMD_CON),
 		 INREG32(&DSI_REG[0]->DSI_INTSTA));
 }
+
+/* S3PRO_PLL: MIPI TX PLL / PHY 寄存器快照（2026-11-25 加）
+ *
+ * 为什么要看这里：DSI 侧所有可见状态（tim0/tim3/phylc/phyld0/vmcmd）
+ * 都与健康态完全相同，但面板就是不回应（DSI_TRIG_STA 的 RX_LPDT 从未置位）。
+ * 唯一还没对比过的就是 MIPI PLL 的分频配置：
+ *
+ *   MIPITX_DSI_PLL_CON0 bit0     PLL_EN
+ *                       bit1-2   PREDIV   (预分频)
+ *                       bit3-4   TXDIV0   (发送分频 0)
+ *                       bit5-6   TXDIV1   (发送分频 1)
+ *                       bit7-9   POSDIV   (后分频)
+ *                       bit12    VDO_EN
+ *   MIPITX_DSI_PLL_CON2 bit0-23 + bit24-30  SDM_PCW (分数分频系数 = 频率)
+ *   MIPITX_DSI_PLL_CON1 bit2     SSC_EN
+ *   MIPITX_DSI_SW_CTRL_EN        软件接管 PHY（若被置位，硬件时序控制失效）
+ *
+ * 如果 PLL_CON0/CON2 与健康态不同，就是"PLL 被关掉后重开、频率没重设"这个假设成立：
+ * ddp_dsi_power_off 里 DSI_PHY_clk_switch(false) 关了 PLL，
+ * resume 的 ddp_dsi_power_on 只 DSI_PHY_clk_switch(true) 重新使能，
+ * 而真正算频率的 DSI_PHY_clk_setting 在 ddp_dsi_config 里被
+ * "MIPITX already init -> goto done" 跳过了。
+ */
+void s3pro_pll_regs(const char *tag)
+{
+	int i;
+	unsigned int v0, v2, pcw;
+
+	for (i = 0; i < 2; i++) {
+		v0 = INREG32(&DSI_PHY_REG[i]->MIPITX_DSI_PLL_CON0);
+		v2 = INREG32(&DSI_PHY_REG[i]->MIPITX_DSI_PLL_CON2);
+		/* CON2 的 PCW 是 bit0-23 + bit24-30 拼成的 31 位 */
+		pcw = (v2 & 0xFFFFFF) | (((v2 >> 24) & 0x7F) << 24);
+
+		pr_alert("[S3PRO_PLL] %s dsi%d EN=%d PREDIV=%d TXDIV0=%d TXDIV1=%d POSDIV=%d VDO_EN=%d | PCW=0x%x | SSC_EN=%d\\n",
+			 tag, i,
+			 (v0 >> 0) & 0x1, (v0 >> 1) & 0x3, (v0 >> 3) & 0x3,
+			 (v0 >> 5) & 0x3, (v0 >> 7) & 0x7, (v0 >> 12) & 0x1,
+			 pcw,
+			 (INREG32(&DSI_PHY_REG[i]->MIPITX_DSI_PLL_CON1) >> 2) & 0x1);
+		pr_alert("[S3PRO_PLL] %s dsi%d raw con=%08x clklane=%08x dl0=%08x | top=%08x c0=%08x c1=%08x c2=%08x c3=%08x | ptop=%08x pwr=%08x swctl=%08x\\n",
+			 tag, i,
+			 INREG32(&DSI_PHY_REG[i]->MIPITX_DSI_CON),
+			 INREG32(&DSI_PHY_REG[i]->MIPITX_DSI_CLOCK_LANE),
+			 INREG32(&DSI_PHY_REG[i]->MIPITX_DSI_DATA_LANE0),
+			 INREG32(&DSI_PHY_REG[i]->MIPITX_DSI_TOP_CON),
+			 v0,
+			 INREG32(&DSI_PHY_REG[i]->MIPITX_DSI_PLL_CON1),
+			 v2,
+			 INREG32(&DSI_PHY_REG[i]->MIPITX_DSI_PLL_CON3),
+			 INREG32(&DSI_PHY_REG[i]->MIPITX_DSI_PLL_TOP),
+			 INREG32(&DSI_PHY_REG[i]->MIPITX_DSI_PLL_PWR),
+			 INREG32(&DSI_PHY_REG[i]->MIPITX_DSI_SW_CTRL_EN));
+	}
+}
 '''
 
 NODES_FUNC = '''/* S3PRO_DBG: 诊断节点（普通 u32）
@@ -235,7 +290,7 @@ CONFIG_TAIL = """done:
 int ddp_dsi_start(DISP_MODULE_ENUM module, void *cmdq)"""
 CONFIG_TAIL_NEW = """done:
 	s3pro_dsi_regs("config");
-	s3pro_path_regs("config");
+	s3pro_path_regs("config"); s3pro_pll_regs("config");
 	/* S3PRO_VMCMD_CLR (2026-11-25)：清掉 DSI_VM_CMD_CON 里可能残留的命令。
 	 *
 	 * 实测复位后残留 0x00100521（CM_DATA_ID=1, CM_DATA_0=0x10 = SLEEP IN），
@@ -267,7 +322,7 @@ DSI_TAIL_NEW = (
     '		MIPITX_IsEnabled(module, NULL), DSI_ClkIsEnabled(module, NULL),\n'
     '		INREG32(&DSI_REG[0]->DSI_INTSTA), INREG32(&DSI_REG[1]->DSI_INTSTA));\n'
     '	s3pro_dsi_regs("start");\n'
-    '	s3pro_path_regs("start");\n'
+    '	s3pro_path_regs("start"); s3pro_pll_regs("start");\n'
     "\n" + DSI_TAIL
 )
 
@@ -290,7 +345,7 @@ TRIGGER_TAIL_NEW = ("	DSI_Start(module, cmdq);\n"
                     "		static unsigned int s3pro_trig_cnt;\n"
                     "		s3pro_trig_cnt++;\n"
                     "		if (s3pro_trig_cnt <= 5 || (s3pro_trig_cnt % 10) == 0)\n"
-                    "			s3pro_path_regs(\"trigger\");\n"
+                    "			s3pro_path_regs(\"trigger\");\n\t\ts3pro_pll_regs(\"trigger\");\n"
                     "		pr_alert(\"[S3PRO_TRIGGER] #%u start=%08x intsta=%08x mode=%08x trig=%08x sta=%08x\\n\",\n"
                     "				 s3pro_trig_cnt,\n"
                     "				 INREG32(&DSI_REG[0]->DSI_START),\n"
