@@ -89,7 +89,11 @@ void s3pro_dsi_regs(const char *tag)
  * 切到 CMD 模式后，命令走正常的命令队列逐条发送，不依赖视频流。
  * 推完表再切回 video 模式，然后才启动视频流。
  *
- * 运行时开关：/sys/kernel/debug/s3pro_cmd_mode_init（默认 1 开启） */
+ * 运行时开关：/sys/kernel/debug/s3pro_cmd_mode_init（默认 1 开启）
+ *
+ * 2026-11-25 复核：曾经把它改成 0 想避免 DSI_SetMode 来回切，但那样
+ * 132 条初始化命令会全部丢失、面板更起不来。副作用（状态机重置）是必须付的代价。
+ * 做对照实验时 echo 0 再唤醒即可。 */
 int s3pro_cmd_mode_init = 1;
 
 void s3pro_dsi_set_mode(int cmd_mode)
@@ -104,6 +108,41 @@ void s3pro_dsi_set_mode(int cmd_mode)
 	DISPMSG("S3PRO_DBG dsi mode -> %u (cmd=%d)\\n", m, cmd_mode);
 }
 
+
+/* S3PRO_PATH: 三个方向的状态快照（2026-11-25 加，用于定位「DSI 启动了但一帧没出」）
+ *
+ * 方向 1: MUTEX 有没有真的 enable
+ *   DISP_REG_CONFIG_MUTEX0_EN  = 0  -> mutex 没开，RDMA/DSI 之间没门控，DSI 不会收数据
+ *                                !=0 -> 低位是 mutex 归属模块 id
+ *   DISP_REG_CONFIG_MUTEX0_SOF = mutex 的 SOF 计数，应随帧递增
+ *
+ * 方向 2: RDMA0 有没有出帧
+ *   DISP_REG_RDMA_INT_STATUS   bit0=EOF, bit1=SOF ... 计数或标志
+ *   DISP_REG_RDMA_GLOBAL_CON   bit0=RDMA_EN
+ *   DISP_REG_RDMA_MEM_START_ADDR 当前读地址（应随帧推进）
+ *   DISP_REG_RDMA_SIZE_CON_0/1   帧尺寸
+ *
+ * 方向 3: DSI 的 VM_CMD 有没有启动/完成
+ *   DSI_START.VM_CMD_START (bit16) 应从 0->1 再被硬件清 0
+ *   DSI_VM_CMD_CON  bit0=VM_CMD_EN, bit5=TS_VFP_EN
+ *   DSI_INTSTA      bit5=VM_CMD_DONE（健康态这里是 1 -> sta=0x20）
+ */
+void s3pro_path_regs(const char *tag)
+{
+	pr_alert("[S3PRO_PATH] %s mutex0_en=%08x mutex0_sof=%08x | rdma0_intsta=%08x rdma0_gcon=%08x rdma0_size0=%08x rdma0_size1=%08x rdma0_memcon=%08x rdma0_start=%08x | dsi_start=%08x vmcmd=%08x intsta=%08x\\n",
+		 tag,
+		 INREG32(DISP_REG_CONFIG_MUTEX0_EN),
+		 INREG32(DISP_REG_CONFIG_MUTEX0_SOF),
+		 INREG32(DISP_REG_RDMA_INT_STATUS),
+		 INREG32(DISP_REG_RDMA_GLOBAL_CON),
+		 INREG32(DISP_REG_RDMA_SIZE_CON_0),
+		 INREG32(DISP_REG_RDMA_SIZE_CON_1),
+		 INREG32(DISP_REG_RDMA_MEM_CON),
+		 INREG32(DISP_REG_RDMA_MEM_START_ADDR),
+		 INREG32(&DSI_REG[0]->DSI_START),
+		 INREG32(&DSI_REG[0]->DSI_VM_CMD_CON),
+		 INREG32(&DSI_REG[0]->DSI_INTSTA));
+}
 '''
 
 NODES_FUNC = '''/* S3PRO_DBG: 诊断节点（普通 u32）
@@ -196,6 +235,7 @@ CONFIG_TAIL = """done:
 int ddp_dsi_start(DISP_MODULE_ENUM module, void *cmdq)"""
 CONFIG_TAIL_NEW = """done:
 	s3pro_dsi_regs("config");
+	s3pro_path_regs("config");
 	return 0;
 }
 
@@ -207,6 +247,7 @@ DSI_TAIL_NEW = (
     '		MIPITX_IsEnabled(module, NULL), DSI_ClkIsEnabled(module, NULL),\n'
     '		INREG32(&DSI_REG[0]->DSI_INTSTA), INREG32(&DSI_REG[1]->DSI_INTSTA));\n'
     '	s3pro_dsi_regs("start");\n'
+    '	s3pro_path_regs("start");\n'
     "\n" + DSI_TAIL
 )
 
@@ -228,8 +269,9 @@ TRIGGER_TAIL_NEW = ("	DSI_Start(module, cmdq);\n"
                     "	{\n"
                     "		static unsigned int s3pro_trig_cnt;\n"
                     "		s3pro_trig_cnt++;\n"
-                    "		if (s3pro_trig_cnt <= 5 || (s3pro_trig_cnt % 200) == 0)\n"
-                    "			pr_alert(\"[S3PRO_TRIGGER] #%u start=%08x intsta=%08x mode=%08x trig=%08x sta=%08x\\n\",\n"
+                    "		if (s3pro_trig_cnt <= 5 || (s3pro_trig_cnt % 10) == 0)\n"
+                    "			s3pro_path_regs(\"trigger\");\n"
+                    "		pr_alert(\"[S3PRO_TRIGGER] #%u start=%08x intsta=%08x mode=%08x trig=%08x sta=%08x\\n\",\n"
                     "				 s3pro_trig_cnt,\n"
                     "				 INREG32(&DSI_REG[0]->DSI_START),\n"
                     "				 INREG32(&DSI_REG[0]->DSI_INTSTA),\n"

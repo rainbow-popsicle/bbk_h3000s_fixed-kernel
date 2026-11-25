@@ -70,6 +70,47 @@ static void lcm_suspend_power(void)
 	LCM_LOGI("%s exit\\n", __func__);
 }
 
+/* S3PRO_READID: DCS 回读探针（由 s3pro_read_id debugfs 节点调用）。
+ *
+ * 为什么需要它：video 模式下 dsi_dcs_read_lcm_reg_v2 会直接 return 0
+ * （源码里 if (MODE_CTRL.MODE) return 0），所以必须先临时切 CMD 模式。
+ * 用 pr_alert 无条件输出，不受 printk 级别过滤。
+ *
+ * 用途：黑屏排查时确认「面板到底还能不能通信」——
+ *   0x0A 读回 0x9C = 面板正常（只是视频流没跑）
+ *   0x0A 读回 0x00 = 面板没电/没初始化
+ */
+extern void s3pro_dsi_set_mode(int cmd_mode);
+
+void mtk_lcm_s3pro_readback(void)
+{
+	unsigned char rb[4];
+	unsigned int ret;
+
+	pr_alert("[S3PRO_RD] === readback begin ===\n");
+
+	/* video 模式下 dcs_read 会短路返回 0，必须先切 CMD */
+	s3pro_dsi_set_mode(1);
+	MDELAY(5);
+
+	memset(rb, 0, sizeof(rb));
+	ret = read_reg_v2(0x0A, rb, 1);
+	pr_alert("[S3PRO_RD] 0x0A power_mode: ret=%u val=0x%02X (0x9C=healthy)\n",
+		 ret, rb[0]);
+
+	memset(rb, 0, sizeof(rb));
+	ret = read_reg_v2(0xDA, rb, 2);
+	pr_alert("[S3PRO_RD] 0xDA id1: ret=%u val=0x%02X%02X\n", ret, rb[0], rb[1]);
+
+	memset(rb, 0, sizeof(rb));
+	ret = read_reg_v2(0xDB, rb, 2);
+	pr_alert("[S3PRO_RD] 0xDB id2: ret=%u val=0x%02X%02X\n", ret, rb[0], rb[1]);
+
+	/* 恢复 video 模式，避免破坏正常显示 */
+	s3pro_dsi_set_mode(0);
+	pr_alert("[S3PRO_RD] === readback end ===\n");
+}
+
 static void lcm_resume(void)
 {
 	LCM_LOGI("%s enter\\n", __func__);
