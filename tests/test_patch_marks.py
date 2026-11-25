@@ -387,6 +387,80 @@ def check_resources(fail):
             print("  [ OK ] %-46s %s 字节" % (rel, os.path.getsize(p)))
 
 
+# ---------------------------------------------------------------- 检查 6
+# 检查「生成后的 C 代码」里 print 类函数的字符串是否跨行。
+#
+# 为什么需要它：补丁脚本用 Python 字符串拼 C 代码，如果写成 '\n' 而不是 '\\n'，
+# 生成的 C 会变成
+#     pr_alert("...跨度
+#     ", ...);
+# 这在编译时是一条 missing terminating " 的报错，但在【补丁脚本本身】的
+# 语法检查（py_compile / check_c_strings）里看不出来 —— 因为 bug 只在
+# 字符串【求值之后】才出现。历史上这一条已经踩过三次
+# （patch_dsi_config_start / patch_disp_debug 的 s3pro_path_regs / s3pro_pll_regs）。
+#
+# 做法：把脚本当模块 import，拿到那些「装着 C 代码」的字符串常量，
+# 在里面找 pr_alert/printk/DISPMSG 调用，检查它们的双引号字面量里没有真换行。
+C_CODE_CONST_HINTS = ("FUNC", "NEW", "REGION", "TAIL", "BLOCK", "CODE", "ANCHOR")
+PRINT_NAMES = ("pr_alert", "pr_info", "pr_err", "printk", "DISPMSG", "DISPCHECK", "DISPERR")
+
+
+def check_generated_c_strings(fail):
+    """把跨行字符串问题汇总进 fail。"""
+    problems = _collect_generated_c_string_problems()
+    if not problems:
+        print("  --- 6) 生成代码里的 print 字符串 ---")
+        print("    [ OK ] 所有 pr_alert/printk 字符串单行闭合")
+        return
+    print("  --- 6) 生成代码里的 print 字符串 ---")
+    for fn, const, msg in problems:
+        print("    [FAIL] %-28s %-18s %s" % (fn, const, msg))
+        fail.append("%s(%s): %s" % (fn, const, msg))
+
+
+def _collect_generated_c_string_problems():
+    """返回 [(脚本名, 常量名, 摘要)]，列出生成代码里跨行的 print 字符串。"""
+    import importlib.util
+
+    problems = []
+    for fn in sorted(os.listdir(SCRIPTS)):
+        if not fn.startswith("patch_") or not fn.endswith(".py"):
+            continue
+        path = os.path.join(SCRIPTS, fn)
+        src = read(path)
+        if not src or not any(n in src for n in PRINT_NAMES):
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location("_chk_" + fn[:-3], path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        except Exception as e:
+            problems.append((fn, "<import>", "无法导入: %s" % e))
+            continue
+
+        for name in dir(mod):
+            if not name.isupper():
+                continue
+            if not any(h in name for h in C_CODE_CONST_HINTS):
+                continue
+            val = getattr(mod, name)
+            if not isinstance(val, str) or not val:
+                continue
+            for pn in PRINT_NAMES:
+                for m in re.finditer(re.escape(pn) + r"\(", val):
+                    seg = val[m.start():m.start() + 900]
+                    end = seg.find(");")
+                    if end < 0:
+                        continue
+                    call = seg[:end + 2]
+                    for s in re.finditer(r'"([^"]*)"', call, re.S):
+                        if "\n" in s.group(1):
+                            problems.append(
+                                (fn, name, "%s 的字符串跨行: %r"
+                                 % (pn, s.group(1)[:60])))
+    return problems
+
+
 def main():
     print("=" * 60)
     print("  静态自检：防「编译通过但补丁没生效」的静默失效")
@@ -396,6 +470,7 @@ def main():
     check_driver_files(fail)
     check_preflight(fail)
     check_c_strings(fail)
+    check_generated_c_strings(fail)
     check_resources(fail)
 
     print("\n" + "=" * 60)
