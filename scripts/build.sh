@@ -85,7 +85,7 @@ for s in \
     patch_lcm_stock.py patch_lcm_init.py patch_lcm_table.py \
     patch_lcm_gpio_fix.py patch_lcm_init_table.py \
     patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
-    patch_disp_debug.py patch_dsi_config_start.py patch_vdo_eof_event.py patch_no_stop_loop.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
+    patch_disp_debug.py patch_dsi_config_start.py patch_resume_no_wait_token.py patch_vdo_eof_event.py patch_no_stop_loop.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
     patch_dimming_cmdmode.py patch_dimming_early.py patch_rst_new.py patch_stock_timing.py patch_lab_push.py \
     patch_lk_replay.py \
     patch_video_kick.py patch_vmcmd.py \
@@ -797,6 +797,23 @@ else
     echo "跳过 no_stop_loop（NO_STOP_LOOP=${NO_STOP_LOOP:-1}）"
 fi
 
+# ★★★★ resume 去掉 video mode 的 wait token（默认开）—— 死锁链里唯一「我们有、LOS 没有」的调用
+#   我们 primary_display_resume 里有：
+#       dpmgr_path_trigger(...);
+#       _cmdq_insert_wait_frame_done_token();   <- 往 config 队列插 cmdqRecWaitNoClear(MUTEX0_STREAM_EOF)
+#   原注释： "make sure first config after resume will config to HW when HW idle"
+#   但 resume 时 dpmgr_path_start 已把 DSI_START 清 0 -> DSI 不输出 -> 没有帧 -> 事件 53 永不来
+#   -> config 队列末尾那条等待永远不完成。
+#   LOS 14.1 的 primary_display_resume（457 条逐指令反汇编）里
+#   bl _cmdq_insert_wait_frame_done_token(0x49e7c4) 【0 处】，
+#   video mode 分支只调 dpmgr_path_trigger 就直接 start_trigger_loop。本补丁照此对齐。
+if [ "${RESUME_NO_WAIT_TOKEN:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_resume_no_wait_token.py" ]; then
+    echo "--- resume 去掉 wait token（对齐 LOS 14.1）---"
+    "$PY" "$ROOT/scripts/patch_resume_no_wait_token.py" . || die "resume 去 wait token 补丁失败"
+else
+    echo "跳过 resume 去 wait token（RESUME_NO_WAIT_TOKEN=${RESUME_NO_WAIT_TOKEN:-1}）"
+fi
+
 
 # ★ 面板推表路径诊断（研究"resume 时命令有没有发到面板"，默认关闭）
 #   在 push_table 每条命令、lcm_resume/lcm_suspend 入口插入无条件 pr_alert。
@@ -1410,6 +1427,7 @@ CHECK_MARKS=""
 [ "${NO_STOP_LOOP:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_NO_STOP_LOOP"
 [ "${VDO_EOF_EVENT:-0}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_VDO_EOF"
 [ "${DSI_CFG_START:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_DSI_CFG_START"
+[ "${RESUME_NO_WAIT_TOKEN:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_NO_WAIT_TOKEN"
 
 if [ -n "$CHECK_MARKS" ]; then
     echo "--- 验证补丁标记是否进入内核镜像 ---"
