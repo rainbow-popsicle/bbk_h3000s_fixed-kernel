@@ -82,9 +82,9 @@ on:
         type: boolean
         default: true
       vdo_eof_event:
-        description: '★★★核心：启用 video mode 的 trigger-loop 点火（MUTEX0_STREAM_EOF）。LOS 14.1 的 suspend 不停 loop 所以无需点火，我们的 suspend 停了 loop，video mode 的点火又被 #if 0 掐了 → 死锁（默认开）'
+        description: '[已证伪·默认关] 在 video mode 的 trigger loop 启动后软件伪造 MUTEX0_STREAM_EOF(53)。2026-11-25 实测：dmesg 打出 is_idle=0（MTK 原本的 if 会跳过）、改成无条件后事件设了但 trig 仍为 0 → 无效。且无条件设事件可能干扰 CMDQ 状态机，故默认关闭'
         type: boolean
-        default: true
+        default: false
       lcm_init_table:
         description: '★★核心：让 lcm_init 做三级选表+推表（vendor id / pio89 电平 → 23/109 项），对齐 LOS 14.1；开机时 kernel 就推表而不是全靠 LK（默认开）'
         type: boolean
@@ -131,6 +131,8 @@ jobs:
         run: python3 tests/test_lcm_patch.py
       - name: 面板补丁链验证（默认开关下生成原厂配置：BOE表+原厂时序）
         run: python3 tests/test_panel_patch_chain.py
+      - name: 补丁标记与驱动清单静态自检（防「编译通过但补丁没生效」）
+        run: python3 tests/test_patch_marks.py
 
   build:
     needs: selftest
