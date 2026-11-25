@@ -236,6 +236,26 @@ int ddp_dsi_start(DISP_MODULE_ENUM module, void *cmdq)"""
 CONFIG_TAIL_NEW = """done:
 	s3pro_dsi_regs("config");
 	s3pro_path_regs("config");
+	/* S3PRO_VMCMD_CLR (2026-11-25)：清掉 DSI_VM_CMD_CON 里可能残留的命令。
+	 *
+	 * 实测复位后残留 0x00100521（CM_DATA_ID=1, CM_DATA_0=0x10 = SLEEP IN），
+	 * 唤醒后每次启动 VM_CMD 都会先把这条 SLEEP IN 发出去 -> 面板睡死 ->
+	 * 不回应任何 DCS -> DSI_TRIG_STA=0 (RX_LPDT 从未置位) -> 没有 VSYNC ->
+	 * VM_CMD_DONE 不来 -> dsi1 DSI_START=0x10001 悬挂 -> 黑屏。
+	 *
+	 * 健康态该寄存器应为 0x00000021（只有 VM_CMD_EN bit0 + TS_VFP_EN bit5）。
+	 * 这里强制归位，防止任何路径把命令滞留在缓冲里。 */
+	{
+		int s3pro_i;
+		for (s3pro_i = 0; s3pro_i < 2; s3pro_i++) {
+			unsigned int s3pro_v = INREG32(&DSI_REG[s3pro_i]->DSI_VM_CMD_CON);
+			if (s3pro_v != 0x21) {
+				pr_alert("[S3PRO_VMCMD_CLR] dsi%d vmcmd was %08x -> 0x21\\n",
+					 s3pro_i, s3pro_v);
+				DSI_OUTREG32(NULL, &DSI_REG[s3pro_i]->DSI_VM_CMD_CON, 0x21);
+			}
+		}
+	}
 	return 0;
 }
 
@@ -321,12 +341,23 @@ EARLY_NEW = (
     '	DISPCHECK("[POWER]display cmdq trigger loop stop[begin]\\n");\n'
     '	/* S3PRO_LCM_EARLY_SUSPEND: 面板的 display-off(0x28)/sleep-in(0x10)\n'
     '	 * 必须在关闭 DSI 之前发出去。原代码把 disp_lcm_suspend 放在\n'
-    '	 * dpmgr_path_stop 之后，命令没有数据通路、被面板丢弃，面板会以\n'
-    '	 * "完全清醒"状态被断电，之后重新上电初始化不起来（实测永久黑屏）。\n'
-    '	 * 出问题时 echo 0 > /sys/kernel/debug/s3pro_lcm_suspend_early 可回退。 */\n'
+    '	 * dpmgr_path_stop 之后，命令没有数据通路、被面板丢弃。\n'
+    '	 *\n'
+    '	 * S3PRO_VMCMD (2026-11-25 关键修复)：只把 suspend 提前还不够。\n'
+    '	 * 因为在视频模式下 DSI_set_cmdq_V2 走 VM_CMD 分支（ddp_dsi.c:1958），\n'
+    '	 * 直接把命令塞进 DSI_VM_CMD_CON 缓冲并起 VM_CMD；此时视频流即将停止、\n'
+    '	 * 注入不出去，SLEEP IN(0x10) 就永久滞留在缓冲里（实测残留\n'
+    '	 * DSI_VM_CMD_CON=0x00100521，CM_DATA_0=0x10），唤醒后每次启动 VM_CMD\n'
+    '	 * 都先把它发出去 -> 面板睡死 -> 不回应任何 DCS -> trig=0 / VM_CMD_START\n'
+    '	 * 悬挂 0x10001 -> 黑屏。所以这里必须和 resume 推表一样先切 CMD 模式，\n'
+    '	 * 让命令走正常队列真正发到面板。 */\n'
     '	if (s3pro_lcm_suspend_early) {\n'
     '		DISPMSG("S3PRO_DBG suspend: lcm_suspend BEFORE dsi stop\\n");\n'
+    '		if (s3pro_cmd_mode_init)\n'
+    '			s3pro_dsi_set_mode(1);\n'
     '		disp_lcm_suspend(pgc->plcm);\n'
+    '		if (s3pro_cmd_mode_init)\n'
+    '			s3pro_dsi_set_mode(0);\n'
     '		DISPMSG("S3PRO_DBG suspend: early lcm_suspend done\\n");\n'
     '	}\n'
     '	_cmdq_stop_trigger_loop();'
