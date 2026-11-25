@@ -760,11 +760,11 @@ fi
 #
 #   config 在 path_start 之前，此处 DSI_Start 能让 DSI 真实输出一帧 -> MUTEX0 产生真实的 53
 #   -> 两道等待都放行 -> 链条自己转起来。（这与软件伪造事件不同，不依赖任何竞态。）
-if [ "${DSI_CFG_START:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_dsi_config_start.py" ]; then
+if [ "${DSI_CFG_START:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_dsi_config_start.py" ]; then
     echo "--- ddp_dsi_config 补 DSI_Start（死锁第一推动，对齐 LOS 14.1）---"
     "$PY" "$ROOT/scripts/patch_dsi_config_start.py" . || die "ddp_dsi_config 点火补丁失败"
 else
-    echo "跳过 ddp_dsi_config 点火（DSI_CFG_START=${DSI_CFG_START:-1}）"
+    echo "跳过 ddp_dsi_config 点火（DSI_CFG_START=${DSI_CFG_START:-0}）"
 fi
 
 # ★★★ video mode 的 trigger-loop 点火（默认开）—— 死锁根因的直接修复
@@ -1426,7 +1426,7 @@ CHECK_MARKS=""
 [ "${LK_REPLAY:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_LKREPLAY"
 [ "${NO_STOP_LOOP:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_NO_STOP_LOOP"
 [ "${VDO_EOF_EVENT:-0}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_VDO_EOF"
-[ "${DSI_CFG_START:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_DSI_CFG_START"
+[ "${DSI_CFG_START:-0}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_DSI_CFG_START"
 [ "${RESUME_NO_WAIT_TOKEN:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_NO_WAIT_TOKEN"
 
 if [ -n "$CHECK_MARKS" ]; then
