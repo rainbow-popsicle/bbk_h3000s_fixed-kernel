@@ -844,14 +844,14 @@ fi
 #   切 CMD 模式（MODE=0）再回读 0x0A/0xDA/0xDB，读完切回 video。
 #   依赖：s3pro_dsi_set_mode() 由 DISP_DEBUG 补丁定义在 ddp_dsi.c，必须一起开。
 #   只加诊断函数，不改任何显示逻辑/时序；默认关闭，LCM_READID=1 开启。
-if [ "${LCM_READID:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_lcm_readid.py" ]; then
+if [ "${LCM_READID:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_lcm_readid.py" ]; then
     if [ "${DISP_DEBUG:-1}" != "1" ]; then
         die "read_id 探针依赖 DISP_DEBUG=1（提供 s3pro_dsi_set_mode），请一起开启"
     fi
     echo "--- 链接 read_id 面板回读探针（切CMD回读 0x0A/0xDA/0xDB）---"
     "$PY" "$ROOT/scripts/patch_lcm_readid.py" . || die "read_id 探针补丁失败"
 else
-    echo "跳过 read_id 探针（LCM_READID=${LCM_READID:-0}）"
+    echo "跳过 read_id 探针（LCM_READID=${LCM_READID:-1}）"
 fi
 
 
