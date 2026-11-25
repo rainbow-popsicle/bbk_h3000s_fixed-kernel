@@ -211,6 +211,37 @@ DSI_TAIL_NEW = (
 )
 
 STOP_TAIL = "	return 0;\n}\n\nint ddp_dsi_switch_lcm_mode"
+
+# ---- ddp_dsi_trigger 的寄存器快照（唯一还没观测过的关键函数）----
+#   用 pr_alert 而不是 DISPMSG：DISPMSG 会被 printk 限流吞掉，
+#   而这里恰恰要确认「trigger 到底有没有被调用」，不能被吞。
+TRIGGER_TAIL = ("	DSI_Start(module, cmdq);\n"
+                "\n"
+                "	return 0;\n"
+                "}\n"
+                "\n"
+                "int ddp_dsi_reset")
+TRIGGER_TAIL_NEW = ("	DSI_Start(module, cmdq);\n"
+                    "\n"
+                    "	/* S3PRO_TRIGGER: 确认 ddp_dsi_trigger 被调用 + 调用后 START/INTSTA 的真实值。\n"
+                    "	 * 前 5 次全打，之后每 200 次打一次，避免刷屏。 */\n"
+                    "	{\n"
+                    "		static unsigned int s3pro_trig_cnt;\n"
+                    "		s3pro_trig_cnt++;\n"
+                    "		if (s3pro_trig_cnt <= 5 || (s3pro_trig_cnt % 200) == 0)\n"
+                    "			pr_alert(\"[S3PRO_TRIGGER] #%u start=%08x intsta=%08x mode=%08x trig=%08x sta=%08x\\n\",\n"
+                    "				 s3pro_trig_cnt,\n"
+                    "				 INREG32(&DSI_REG[0]->DSI_START),\n"
+                    "				 INREG32(&DSI_REG[0]->DSI_INTSTA),\n"
+                    "				 INREG32(&DSI_REG[0]->DSI_MODE_CTRL),\n"
+                    "				 INREG32(&DSI_REG[0]->DSI_TRIG_STA),\n"
+                    "				 INREG32(&DSI_REG[0]->DSI_STA));\n"
+                    "	}\n"
+                    "\n"
+                    "	return 0;\n"
+                    "}\n"
+                    "\n"
+                    "int ddp_dsi_reset")
 STOP_TAIL_NEW = (
     '	DISPMSG("S3PRO_DBG dsi_stop_end: mipitx=%d dsiclk=%d intsta0=0x%08x intsta1=0x%08x\\n",\n'
     '		MIPITX_IsEnabled(module, NULL), DSI_ClkIsEnabled(module, NULL),\n'
@@ -326,6 +357,7 @@ DSI_PATCHES = [
     (CONFIG_TAIL, CONFIG_TAIL_NEW),
     (DSI_TAIL, DSI_TAIL_NEW),
     (STOP_TAIL, STOP_TAIL_NEW),
+    (TRIGGER_TAIL, TRIGGER_TAIL_NEW),
 ]
 
 
@@ -387,6 +419,7 @@ def main():
         "config 快照": 's3pro_dsi_regs("config")' in d,
         "start 快照": 's3pro_dsi_regs("start")' in d,
         "stop 快照": 's3pro_dsi_regs("stop")' in d,
+        "trigger 快照": "[S3PRO_TRIGGER]" in d,
         "skip_stop 实验节点已移除": 'debugfs_create_u32("s3pro_skip_stop"' not in p,
         "reinit 实验节点已移除": 'debugfs_create_u32("s3pro_reinit_on_resume"' not in p,
         "early 实验节点已移除": 'debugfs_create_u32("s3pro_lcm_suspend_early"' not in p,
