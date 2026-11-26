@@ -40,9 +40,9 @@ int s3pro_lcm_variant = 0;
 
 '''
 
-NEW_REGION = '''static void lcm_suspend(void)
+NEW_REGION = r'''static void lcm_suspend(void)
 {
-	LCM_LOGI("%s enter\\n", __func__);
+	LCM_LOGI("%s enter\n", __func__);
 
 	cancel_delayed_work_sync(&open_lcm_dimming);
 
@@ -52,12 +52,12 @@ NEW_REGION = '''static void lcm_suspend(void)
 	push_table(s3pro_sleep_table,
 		   sizeof(s3pro_sleep_table) / sizeof(struct LCM_setting_table), 1);
 
-	LCM_LOGI("%s exit\\n", __func__);
+	LCM_LOGI("%s exit\n", __func__);
 }
 
 static void lcm_suspend_power(void)
 {
-	LCM_LOGI("%s enter\\n", __func__);
+	LCM_LOGI("%s enter\n", __func__);
 
 	/* 原厂 suspend_power：按上电的逆序掉电 */
 	lcm_set_gpio_output(GPIO_LCD_RST_EN, GPIO_OUT_ZERO);
@@ -67,40 +67,74 @@ static void lcm_suspend_power(void)
 	lcm_set_gpio_output(GPIO_LCD_VSP_EN, GPIO_OUT_ZERO);
 	MDELAY(2);
 
-	LCM_LOGI("%s exit\\n", __func__);
+	LCM_LOGI("%s exit\n", __func__);
 }
 
 static void lcm_resume(void)
 {
-	LCM_LOGI("%s enter\\n", __func__);
+	LCM_LOGI("%s enter\n", __func__);
 
-	/* 原厂 resume：先复位，再使能 VSP/VSN（原实现顺序相反） */
+	/* ===== S3PRO_TPS65132 (2026-11-26 关键修复) =====
+	 * 原实现只拉 VSP_EN/VSN_EN 两个 GPIO，但那只打开了 TPS65132 的 EN 脚，
+	 * 芯片本身要通过 I2C 写 0x00/0x01 才会输出 VPOS/VNEG。缺了这两条写，
+	 * 面板正负电源就是 0V —— 实测唤醒后 read_id 全 0、trig=0、面板完全不响应。
+	 * 健康态（LK 初始化）能读到 0x9C，正是因为它配好了 TPS65132。
+	 *
+	 * 顺序也按原厂 inputs 驱动：先 VSP+TPS 再 VSN+TPS，最后 RST 三段。
+	 * （旧实现在没电的情况下先按 RST，属于顺序颠倒。） */
+	{
+		unsigned char cmd = 0x00;
+		unsigned char data = 0x10;
+		int tps_ret;
+
+		LCM_LOGI("enable vsp + tps65132 pos\n");
+		lcm_set_gpio_output(GPIO_LCD_VSP_EN, GPIO_OUT_ONE);
+		MDELAY(2);
+		tps_ret = tps65132_write_bytes(cmd, data);
+		if (tps_ret < 0)
+			LCM_LOGI("tps65132-cmd=0x%x i2c write error\n", cmd);
+		else
+			LCM_LOGI("tps65132-cmd=0x%x i2c write success\n", cmd);
+		MDELAY(12);
+
+		LCM_LOGI("enable vsn + tps65132 neg\n");
+		lcm_set_gpio_output(GPIO_LCD_VSN_EN, GPIO_OUT_ONE);
+		MDELAY(2);
+		cmd = 0x01;
+		tps_ret = tps65132_write_bytes(cmd, data);
+		if (tps_ret < 0)
+			LCM_LOGI("tps65132-cmd=0x%x i2c write error\n", cmd);
+		else
+			LCM_LOGI("tps65132-cmd=0x%x i2c write success\n", cmd);
+		MDELAY(24);
+	}
+
+	LCM_LOGI("rst up1\n");
 	lcm_set_gpio_output(GPIO_LCD_RST_EN, GPIO_OUT_ONE);
-	MDELAY(5);
+	MDELAY(12);
+
+	LCM_LOGI("rst down\n");
 	lcm_set_gpio_output(GPIO_LCD_RST_EN, GPIO_OUT_ZERO);
-	MDELAY(2);
-	lcm_set_gpio_output(GPIO_LCD_RST_EN, GPIO_OUT_ONE);
-	MDELAY(25);
+	MDELAY(12);
 
-	lcm_set_gpio_output(GPIO_LCD_VSP_EN, GPIO_OUT_ONE);
-	MDELAY(2);
-	lcm_set_gpio_output(GPIO_LCD_VSN_EN, GPIO_OUT_ONE);
-	MDELAY(2);
+	LCM_LOGI("rst up2\n");
+	lcm_set_gpio_output(GPIO_LCD_RST_EN, GPIO_OUT_ONE);
+	MDELAY(32);
 
 	/* 原厂按 variant 二选一；这里用运行时变量 */
 	if (s3pro_lcm_variant) {
-		LCM_LOGI("push init table B (109)\\n");
+		LCM_LOGI("push init table B (109)\n");
 		push_table(s3pro_init_table_b,
 			   sizeof(s3pro_init_table_b) / sizeof(struct LCM_setting_table), 1);
 	} else {
-		LCM_LOGI("push init table A (23)\\n");
+		LCM_LOGI("push init table A (23)\n");
 		push_table(s3pro_init_table_a,
 			   sizeof(s3pro_init_table_a) / sizeof(struct LCM_setting_table), 1);
 	}
 
 	schedule_delayed_work(&open_lcm_dimming, msecs_to_jiffies(500));
 
-	LCM_LOGI("%s exit\\n", __func__);
+	LCM_LOGI("%s exit\n", __func__);
 }
 
 /* 旧初始化表/睡眠表仍留在文件里但不再被调用（改用原厂 s3pro_* 三张表）。
@@ -120,20 +154,20 @@ static void lcm_set_disp_param(unsigned int param)
 {
 	int ret;
 
-	LCM_LOGI("lcm_set_disp_paramt: param = %d\\n", param);
+	LCM_LOGI("lcm_set_disp_paramt: param = %d\n", param);
 	ret = set_panel_disp_param(param, push_table);
 	(void)ret;
 }
 
 static void lcm_resume_power(void)
 {
-	LCM_LOGI("%s, begin\\n", __func__);
+	LCM_LOGI("%s, begin\n", __func__);
 
 	/* 原厂 resume_power：1V8 上电 + 20ms */
 	lcm_set_gpio_output(GPIO_LCD_1V8_EN, GPIO_OUT_ONE);
 	MDELAY(20);
 
-	LCM_LOGI("%s, end\\n", __func__);
+	LCM_LOGI("%s, end\n", __func__);
 }
 
 '''
@@ -239,15 +273,18 @@ def main():
         "表A 已插入": "s3pro_init_table_a[]" in c,
         "表B 已插入": "s3pro_init_table_b[]" in c,
         "variant 固定为表A(实测0)": "int s3pro_lcm_variant = 0;" in c,
-        "先复位后VSP": (c.find("GPIO_LCD_RST_EN, GPIO_OUT_ONE);\n\tMDELAY(5);")
-                        < c.find("GPIO_LCD_VSP_EN, GPIO_OUT_ONE);\n\tMDELAY(2);")),
+        "先VSP后RST（原厂顺序）": (
+            c.find("GPIO_LCD_VSP_EN, GPIO_OUT_ONE);") >= 0
+            and c.find("tps65132_write_bytes(cmd") >= 0
+            and c.find("GPIO_LCD_VSP_EN, GPIO_OUT_ONE);") < c.find("rst up1")
+        ),
         "suspend_power 已实现": "static void lcm_suspend_power(void)" in c,
         "suspend_power 已挂接": ".suspend_power  = lcm_suspend_power," in c,
         "set_panel_disp_param 声明在调用前": ("extern int set_panel_disp_param(" in c
                                         and c.find("extern int set_panel_disp_param(") < c.find("ret = set_panel_disp_param(")),
         "send_cmd typedef 存在": "typedef void (*send_cmd)" in c,
         "旧表已引用(避免-unused)": "s3pro_keep_legacy_tables" in c,
-        "已移除 tps65132 调用": "tps65132_write_bytes(cmd" not in c,
+        "含 tps65132 调用（原厂行为）": "tps65132_write_bytes(cmd" in c,
         "已移除 ddp_dsi_power_off": "ddp_dsi_power_off(32" not in c,
         "花括号配平": c.count("{") == c.count("}"),
     }
