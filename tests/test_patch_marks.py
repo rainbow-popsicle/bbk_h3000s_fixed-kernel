@@ -402,7 +402,8 @@ def check_resources(fail):
 # 做法：把脚本当模块 import，拿到那些「装着 C 代码」的字符串常量，
 # 在里面找 pr_alert/printk/DISPMSG 调用，检查它们的双引号字面量里没有真换行。
 C_CODE_CONST_HINTS = ("FUNC", "NEW", "REGION", "TAIL", "BLOCK", "CODE", "ANCHOR")
-PRINT_NAMES = ("pr_alert", "pr_info", "pr_err", "printk", "DISPMSG", "DISPCHECK", "DISPERR")
+PRINT_NAMES = ("pr_alert", "pr_info", "pr_err", "printk", "DISPMSG", "DISPCHECK", "DISPERR",
+                "LCM_LOGI", "LCM_LOGD", "LCM_LOGE", "LCM_LOGW")
 
 
 def check_generated_c_strings(fail):
