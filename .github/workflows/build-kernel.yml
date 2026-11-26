@@ -113,6 +113,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: 补丁实现审计（生成代码里是否真有预期改动）
+        run: |
+          set -e
+          python3 tests/test_patch_implementation.py
+
       - name: 显示输入
         run: |
           echo "repo      = ${{ inputs.kernel_repo || 'Haoduo9/android_kernel_bbk_h3000s' }}"
