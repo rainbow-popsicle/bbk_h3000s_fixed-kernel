@@ -85,7 +85,14 @@ for s in \
     patch_lcm_stock.py patch_lcm_init.py patch_lcm_table.py \
     patch_lcm_gpio_fix.py patch_lcm_init_table.py \
     patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
-    patch_disp_debug.py patch_dsi_config_start.py patch_resume_no_wait_token.py patch_vdo_eof_event.py patch_no_stop_loop.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
+    patch_disp_debug.py patch_resume_order.py patch_dsi_config_start.py patch_resume_no_wait_token.py patch_vdo_eof_event.py patch_no_stop_loop.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
+
+    # S3PRO_RESUME_ORDER: 把 lcm resume 挪到 trigger 之后（默认开）
+    if [ "${RESUME_ORDER:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_resume_order.py" ]; then
+    	"$PY" "$ROOT/scripts/patch_resume_order.py" . || die "resume 顺序补丁失败"
+    else
+    	echo "跳过 resume 顺序补丁（RESUME_ORDER=${RESUME_ORDER:-1}）"
+    fi
     patch_dimming_cmdmode.py patch_dimming_early.py patch_rst_new.py patch_stock_timing.py patch_lab_push.py \
     patch_lk_replay.py \
     patch_video_kick.py patch_vmcmd.py \
@@ -1428,6 +1435,7 @@ CHECK_MARKS=""
 [ "${VDO_EOF_EVENT:-0}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_VDO_EOF"
 [ "${DSI_CFG_START:-0}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_DSI_CFG_START"
 [ "${RESUME_NO_WAIT_TOKEN:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_NO_WAIT_TOKEN"
+[ "${RESUME_ORDER:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_RESUME_ORDER"
 
 if [ -n "$CHECK_MARKS" ]; then
     echo "--- 验证补丁标记是否进入内核镜像 ---"

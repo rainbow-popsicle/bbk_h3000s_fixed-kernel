@@ -96,7 +96,13 @@ void s3pro_dsi_regs(const char *tag)
  * 2026-11-25 复核：曾经把它改成 0 想避免 DSI_SetMode 来回切，但那样
  * 132 条初始化命令会全部丢失、面板更起不来。副作用（状态机重置）是必须付的代价。
  * 做对照实验时 echo 0 再唤醒即可。 */
-int s3pro_cmd_mode_init = 1;
+/* S3PRO_CMDMODE 默认 0（2026-11-26）：
+ * lcm_resume 已由 patch_resume_order.py 挪到 dpmgr_path_trigger 之后，
+ * 此时视频流已启动、VM_CMD 有 VFP 空隙可注入，不再需要切 CMD 模式。
+ * 切 CMD 会打断视频流；若发生在 _cmdq_start_trigger_loop 之后，
+ * 还会让 trigger loop 永远等不到 MUTEX0_STREAM_EOF(event 53) 而死锁
+ * （read_id 就是踩这个坑，实测 454 次 CMDQ SW timeout 卡死整机）。 */
+int s3pro_cmd_mode_init;
 
 void s3pro_dsi_set_mode(int cmd_mode)
 {
@@ -241,6 +247,8 @@ static ssize_t s3pro_dsi_dump_write(struct file *file, const char __user *buf,
 {
 	DISPMSG("S3PRO_DBG dsi_dump: manual register snapshot\\n");
 	s3pro_dsi_regs("manual");
+	s3pro_path_regs("manual");
+	s3pro_pll_regs("manual");
 	return count;
 }
 
