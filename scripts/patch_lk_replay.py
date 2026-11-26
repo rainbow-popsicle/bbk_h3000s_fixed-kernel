@@ -29,7 +29,7 @@
 
 运行期（adb root 后）：
     echo 1 > /sys/kernel/debug/s3pro_lk/variant
-        0 = bbk stock（当前默认，保持现状）：RST 5/2/25 -> VSP/VSN -> 表A
+        0 = 原厂顺序（当前默认，2026-11-26 起）：VSP+TPS -> VSN+TPS -> RST 12/12/32 -> 表
         1 = ★原驱动/LK 完整时序：VSP -> 12 -> VSN -> 24 -> RST 12/12/32 -> 表A
         2 = LK 纯复位时序：RST 12/12/32 -> VSP/VSN -> 表A
         3 = 原驱动顺序 + 加长延时：VSP -> 20 -> VSN -> 20 -> RST 20/20/50 -> 表A
@@ -157,6 +157,7 @@ NEW_RESUME = '''static void lcm_resume(void)
 	u32 reps, gap;
 	int vsp_first;
 	int use_rst_new;
+	int tps_ret;
 
 	s3pro_lk_dbg_init();
 
@@ -167,7 +168,7 @@ NEW_RESUME = '''static void lcm_resume(void)
 	case 2:  d1 = 12; d2 = 12; d3 = 32; vsp_first = 0; break;	/* LK reset only */
 	case 3:  d1 = 20; d2 = 20; d3 = 50; vsp_first = 1; break;	/* original + longer */
 	case 4:  d1 = 5;  d2 = 2;  d3 = 15; vsp_first = 1; vsn_d = 15; break;	/* EXACT reference kernel */
-	default: d1 = 5;  d2 = 2;  d3 = 25; vsp_first = 0; break;	/* bbk stock, current */
+	default: d1 = 12; d2 = 12; d3 = 32; vsp_first = 1; break;	/* 原厂顺序（2026-11-26 改为默认） */
 	}
 	if (s3pro_lk_vsp_before == 1)
 		vsp_first = 1;
@@ -193,8 +194,17 @@ NEW_RESUME = '''static void lcm_resume(void)
 		lcm_set_gpio_output(GPIO_LCD_VSP_EN, GPIO_OUT_ONE);
 		pr_alert("[S3PRO_LKREPLAY] VSP=1 j=%lu\\n", jiffies);
 		MDELAY(2);
+		/* S3PRO_LKTPS: TPS65132 正电源使能。VSP_EN 只打开芯片 EN 脚，
+		 * 芯片要收到 I2C 命令才输出 VPOS；缺这条写面板正电源就是 0V。
+		 * 原厂驱动有这两条，本实验台以前把它们丢了。 */
+		tps_ret = tps65132_write_bytes(0x00, 0x10);
+		pr_alert("[S3PRO_LKREPLAY] tps65132 pos ret=%d j=%lu\\n", tps_ret, jiffies);
+		MDELAY(12);
 		lcm_set_gpio_output(GPIO_LCD_VSN_EN, GPIO_OUT_ONE);
 		pr_alert("[S3PRO_LKREPLAY] VSN=1 then wait %ums j=%lu\\n", vsn_d, jiffies);
+		MDELAY(2);
+		tps_ret = tps65132_write_bytes(0x01, 0x10);
+		pr_alert("[S3PRO_LKREPLAY] tps65132 neg ret=%d j=%lu\\n", tps_ret, jiffies);
 		MDELAY(vsn_d);
 	}
 
@@ -220,8 +230,14 @@ NEW_RESUME = '''static void lcm_resume(void)
 		lcm_set_gpio_output(GPIO_LCD_VSP_EN, GPIO_OUT_ONE);
 		pr_alert("[S3PRO_LKREPLAY] VSP=1 j=%lu\\n", jiffies);
 		MDELAY(2);
+		tps_ret = tps65132_write_bytes(0x00, 0x10);
+		pr_alert("[S3PRO_LKREPLAY] tps65132 pos ret=%d j=%lu\\n", tps_ret, jiffies);
+		MDELAY(12);
 		lcm_set_gpio_output(GPIO_LCD_VSN_EN, GPIO_OUT_ONE);
 		pr_alert("[S3PRO_LKREPLAY] VSN=1 j=%lu\\n", jiffies);
+		MDELAY(2);
+		tps_ret = tps65132_write_bytes(0x01, 0x10);
+		pr_alert("[S3PRO_LKREPLAY] tps65132 neg ret=%d j=%lu\\n", tps_ret, jiffies);
 		MDELAY(2);
 	}
 
