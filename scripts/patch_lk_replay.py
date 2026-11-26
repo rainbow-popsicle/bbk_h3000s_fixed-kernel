@@ -69,6 +69,8 @@ PRELUDE = '''/* S3PRO_LKREPLAY: LK power/reset timing replay bench
  *   dly1/2/3    override each MDELAY in ms, 0 = variant default
  */
 u32 s3pro_lk_variant;
+/* S3PRO_KEEP_POWER: 1 = suspend 时跳过断电（定义给 patch_lcm_stock.py 用） */
+int s3pro_keep_power;
 u32 s3pro_lk_rst_new;
 u32 s3pro_lk_vsp_before;
 u32 s3pro_lk_dly1;
@@ -146,6 +148,8 @@ static void s3pro_lk_dbg_init(void)
 	debugfs_create_u32("vsn_dly", 0644, d, &s3pro_lk_vsn_dly);
 	debugfs_create_u32("repeat", 0644, d, &s3pro_lk_repeat);
 	debugfs_create_u32("no_power", 0644, d, &s3pro_lk_no_power);
+	debugfs_create_u32("keep_power", 0644, d,
+			    (u32 *)&s3pro_keep_power);
 	pr_alert("[S3PRO_LKREPLAY] debugfs ready: /sys/kernel/debug/s3pro_lk/\\n");
 }
 

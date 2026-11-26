@@ -40,7 +40,13 @@ int s3pro_lcm_variant = 0;
 
 '''
 
-NEW_REGION = r'''static void lcm_suspend(void)
+NEW_REGION = r'''/* S3PRO_KEEP_POWER: suspend 时是否跳断电（1=跳过，保持面板供电）
+ * 定义在 patch_lk_replay.py，debugfs 节点 /sys/kernel/debug/s3pro_lk/keep_power
+ * 动机：tps65132_probe 未被调用 -> i2_client 为 NULL -> resume 无法重新使能
+ * TPS65132。不断电则 TPS65132 寄存器（LK 配好）保留，EN 拉高即恢复输出。 */
+extern int s3pro_keep_power;
+
+static void lcm_suspend(void)
 {
 	LCM_LOGI("%s enter\n", __func__);
 
@@ -58,6 +64,16 @@ NEW_REGION = r'''static void lcm_suspend(void)
 static void lcm_suspend_power(void)
 {
 	LCM_LOGI("%s enter\n", __func__);
+
+	/* S3PRO_KEEP_POWER: keep_power=1 时完全跳过断电，让 TPS65132 的寄存器
+	 * （以及面板内部状态）原样保留到下次 resume。用于验证「断电是否是
+	 * 面板起不来的原因」——因为 tps65132 的 i2c client 是 NULL，
+	 * 一旦断电，内核没有办法在 resume 时重新把 TPS65132 打开。 */
+	if (s3pro_keep_power) {
+		LCM_LOGI("%s: keep_power=1, skip power-off\n", __func__);
+		LCM_LOGI("%s exit\n", __func__);
+		return;
+	}
 
 	/* 原厂 suspend_power：按上电的逆序掉电 */
 	lcm_set_gpio_output(GPIO_LCD_RST_EN, GPIO_OUT_ZERO);
