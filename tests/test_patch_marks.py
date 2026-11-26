@@ -462,6 +462,105 @@ def _collect_generated_c_string_problems():
     return problems
 
 
+
+def check_build_sh_syntax(fail):
+    """build.sh 的 shell 结构静态检查。
+
+    覆盖两类真实踩过的 CI 失败（本地没有可用 bash，沙箱不让建 signal pipe）：
+      A. for 的续行列表里混入 if/for/while/case
+         把执行块插进预检清单 -> syntax error near unexpected token `if'
+      B. 续行反斜杠后面紧跟空行
+         列表提前终止，后续文件名变成独立命令
+         -> syntax error near unexpected token `patch_xxx.py'
+    """
+    print("\n--- 7) build.sh shell 结构 ---")
+    BS = chr(92)
+    if not os.path.exists(BUILD_SH):
+        print("  [FAIL] 找不到 build.sh")
+        fail.append("缺 build.sh（语法检查）")
+        return
+    lines = open(BUILD_SH, encoding="utf-8", errors="replace").read().split("\n")
+
+    def code_of(l):
+        if l.lstrip().startswith("#"):
+            return ""
+        return re.sub(r"(?<!\\)#.*$", "", l)
+
+    bad = []
+
+    for i, l in enumerate(lines):
+        if code_of(l).rstrip().endswith(BS):
+            j = i + 1
+            if j < len(lines) and lines[j].strip() == "":
+                k = j + 1
+                while k < len(lines) and lines[k].strip() == "":
+                    k += 1
+                if k < len(lines):
+                    bad.append("行%d 的续行反斜杠后紧跟空行（后面是 %r）"
+                               % (i + 1, lines[k].strip()[:48]))
+
+    in_list = False
+    list_start = 0
+    for i, l in enumerate(lines, 1):
+        s = code_of(l).strip()
+        if in_list:
+            if re.match(r"^do\b", s) or re.search(r";\s*do\s*$", s):
+                in_list = False
+                continue
+            if re.match(r"^(if|for|while|case|fi|done|esac)\b", s):
+                bad.append("行%d（for 列表起于行%d）混入控制语句: %s"
+                           % (i, list_start, s[:48]))
+            continue
+        if re.match(r"^for\s+\w+\s+in\b", s) and s.rstrip().endswith(BS):
+            in_list = True
+            list_start = i
+    if in_list:
+        bad.append("for 列表（行%d 起）找不到 do 结尾" % list_start)
+
+    merged = []
+    buf = ""
+    for l in lines:
+        c = code_of(l)
+        if c.rstrip().endswith(BS):
+            buf += c.rstrip()[:-1] + " "
+        else:
+            buf += c
+            merged.append(buf)
+            buf = ""
+    if buf:
+        merged.append(buf)
+    d = {"if": 0, "for": 0, "while": 0, "case": 0}
+    for m in merged:
+        for w in re.findall(r"\b(if|fi|for|do|done|while|until|case|esac)\b", m):
+            if w == "if":
+                d["if"] += 1
+            elif w == "fi":
+                d["if"] -= 1
+            elif w == "for":
+                d["for"] += 1
+            elif w in ("while", "until"):
+                d["while"] += 1
+            elif w == "done":
+                if d["for"] > 0:
+                    d["for"] -= 1
+                elif d["while"] > 0:
+                    d["while"] -= 1
+            elif w == "case":
+                d["case"] += 1
+            elif w == "esac":
+                d["case"] -= 1
+    for k, v in d.items():
+        if v != 0:
+            bad.append("%s 不配平（深度 %d）" % (k, v))
+
+    if bad:
+        for b in bad:
+            print("  [FAIL] %s" % b)
+        fail.append("build.sh shell 结构（%d 处）" % len(bad))
+    else:
+        print("  [OK  ] 续行完整 / for 列表干净 / 结构配平")
+
+
 def main():
     print("=" * 60)
     print("  静态自检：防「编译通过但补丁没生效」的静默失效")
@@ -473,6 +572,7 @@ def main():
     check_c_strings(fail)
     check_generated_c_strings(fail)
     check_resources(fail)
+    check_build_sh_syntax(fail)
 
     print("\n" + "=" * 60)
     if fail:
