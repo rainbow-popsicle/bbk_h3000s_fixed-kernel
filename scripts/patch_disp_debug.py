@@ -240,7 +240,11 @@ extern void s3pro_dsi_set_mode(int cmd_mode);
  * 用法：echo 1 > /sys/kernel/debug/s3pro_read_id */
 extern void mtk_lcm_s3pro_readback(void) __attribute__((weak));
 
+/* 这三个都定义在 ddp_dsi.c（本文件只负责在 primary_display.c 里调用）。
+ * 少了声明就是 -Werror=implicit-function-declaration（实测 CI 编译失败的点）。 */
 extern void s3pro_dsi_regs(const char *tag);
+extern void s3pro_path_regs(const char *tag);
+extern void s3pro_pll_regs(const char *tag);
 
 static ssize_t s3pro_dsi_dump_write(struct file *file, const char __user *buf,
 				    size_t count, loff_t *ppos)
