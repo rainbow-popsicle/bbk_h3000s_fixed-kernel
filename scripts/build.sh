@@ -87,12 +87,6 @@ for s in \
     patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
     patch_disp_debug.py patch_resume_order.py patch_dsi_config_start.py patch_resume_no_wait_token.py patch_vdo_eof_event.py patch_no_stop_loop.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
 
-    # S3PRO_RESUME_ORDER: 把 lcm resume 挪到 trigger 之后（默认开）
-    if [ "${RESUME_ORDER:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_resume_order.py" ]; then
-    	"$PY" "$ROOT/scripts/patch_resume_order.py" . || die "resume 顺序补丁失败"
-    else
-    	echo "跳过 resume 顺序补丁（RESUME_ORDER=${RESUME_ORDER:-1}）"
-    fi
     patch_dimming_cmdmode.py patch_dimming_early.py patch_rst_new.py patch_stock_timing.py patch_lab_push.py \
     patch_lk_replay.py \
     patch_video_kick.py patch_vmcmd.py \
@@ -746,6 +740,19 @@ if [ "${DISP_DEBUG:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_disp_debug.py" ]; t
     "$PY" "$ROOT/scripts/patch_disp_debug.py" . || die "显示诊断补丁失败"
 else
     echo "跳过显示诊断打印（DISP_DEBUG=${DISP_DEBUG:-1}）"
+fi
+
+# ★ S3PRO_RESUME_ORDER: 把 disp_lcm_resume 从 config 之后挪到 trigger 之后
+#   实测 config 阶段 phylc=0（MIPI 时钟未开），原位置推 23 项初始化表时
+#   命令没有传输通道被全部丢弃，面板收不到 sleep-out(0x11)，停在
+#   suspend 时的 sleep-in(0x10) 深睡，从此不回应任何 DCS -> 永久黑屏。
+#   新位置：trigger 之后（时钟已开、视频流已启动）、_cmdq_start_trigger_loop
+#   之前（避免切 CMD 打断视频流导致 event 53 死锁）。
+#   配套：patch_disp_debug 里 cmd_mode_init 默认已改为 0（走 VM_CMD）。
+if [ "${RESUME_ORDER:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_resume_order.py" ]; then
+    "$PY" "$ROOT/scripts/patch_resume_order.py" . || die "resume 顺序补丁失败"
+else
+    echo "跳过 resume 顺序补丁（RESUME_ORDER=${RESUME_ORDER:-1}）"
 fi
 
 # ★★★★ ddp_dsi_config 的 video 分支补 DSI_Start（默认开）—— 死锁的「第一推动」
