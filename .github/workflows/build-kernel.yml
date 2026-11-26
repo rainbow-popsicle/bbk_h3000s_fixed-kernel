@@ -53,6 +53,10 @@ on:
         description: '★★★★核心：去掉 primary_display_resume 里 video mode 的 _cmdq_insert_wait_frame_done_token。LOS 14.1 的 resume(457 条反汇编)里这一调用 0 处，video 分支只调 dpmgr_path_trigger 就 start_loop；我们多插了一条「等事件 53」，而 DSI_START 已被清 0 → 53 永不来 → config 队列死锁（默认开）'
         type: boolean
         default: true
+      resume_order:
+        description: '★★★★核心：把 disp_lcm_resume 从 config 之后挪到 trigger 之后、start_trigger_loop 之前。实测 config 阶段 phylc=0（MIPI 时钟未开），原位置推表命令无通道被丢弃，面板收不到 sleep-out 停在 sleep-in 深睡；新位置三个约束同时满足（时钟已开 / 两个 is_busy 检查都在前 / loop 未启动）。需配合 cmd_mode_init=0，已一并改默认（默认开）'
+        type: boolean
+        default: true
       dsi_config_start:
         description: '[已证伪·默认关] 在 ddp_dsi_config 出口补 DSI_Start。2026-11-25 实测：config 阶段 DSI_MODE_CTRL.MODE 还是 CMD(0)，此时启动 DSI 会让它进入 busy，而 _dsi_is_video_mode() 读寄存器返回 0 → DSI_WaitForNotBusy 走等待路径超时 #572 次；更严重的是 ddp_dsi_stop 里两个 while(1) 死等 busy 清除 → dsi1 is busy 反复打印 → suspend 卡死 → 黑屏。必须关闭'
         type: boolean
@@ -150,6 +154,7 @@ jobs:
           LCM_READID: ${{ (inputs.lcm_readid && '1') || '0' }}
           STOCK_TIMING: ${{ (inputs.stock_timing && '1') || '0' }}
           RESUME_NO_WAIT_TOKEN: ${{ (inputs.resume_no_wait_token && '1') || '0' }}
+          RESUME_ORDER: ${{ (inputs.resume_order && '1') || '0' }}
           DSI_CFG_START: ${{ (inputs.dsi_config_start && '1') || '0' }}
           NO_STOP_LOOP: ${{ (inputs.no_stop_loop && '1') || '0' }}
           VDO_EOF_EVENT: ${{ (inputs.vdo_eof_event && '1') || '0' }}
