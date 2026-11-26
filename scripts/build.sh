@@ -86,7 +86,6 @@ for s in \
     patch_lcm_gpio_fix.py patch_lcm_init_table.py \
     patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
     patch_disp_debug.py patch_resume_order.py patch_dsi_config_start.py patch_resume_no_wait_token.py patch_vdo_eof_event.py patch_no_stop_loop.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
-
     patch_dimming_cmdmode.py patch_dimming_early.py patch_rst_new.py patch_stock_timing.py patch_lab_push.py \
     patch_lk_replay.py \
     patch_video_kick.py patch_vmcmd.py \
