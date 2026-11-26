@@ -112,6 +112,11 @@ def audit_driver(path):
     chk('readback 回读 0x0A', 'read_reg_v2(0x0A' in c)
     chk('readback 回读 0xDA/0xDB', 'read_reg_v2(0xDA' in c and 'read_reg_v2(0xDB' in c)
 
+    # ---- keep_power 开关（suspend 不断电，用于验证断电假设）----
+    chk('keep_power 变量存在', 's3pro_keep_power' in c)
+    chk('suspend_power 受 keep_power 控制', 'if (s3pro_keep_power)' in c)
+    chk('keep_power debugfs 节点', 'debugfs_create_u32("keep_power"' in c)
+
     # ---- debugfs 实验台 ----
     chk('debugfs 节点(s3pro_lk/s3pro_tmg)', ('s3pro_lk' in c) or ('s3pro_tmg' in c))
 
