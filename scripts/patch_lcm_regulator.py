@@ -70,8 +70,19 @@ MARK = "S3PRO_VGP"
 # ---------------------------------------------------------------- primary_display.c
 PD_REL = os.path.join("drivers", "misc", "mediatek", "video", "mt8173",
                       "videox", "primary_display.c")
-# 唯一锚点：primary_display_init 里保存 dev
-PD_ANCHOR = "\tpregulator = dev;\n"
+
+# ★ 锚点必须"只追加、不替换"原有语句。
+# 曾经的错误写法：PD_ANCHOR = "\tpregulator = dev;\n" 然后把整段替换成自己的代码，
+# 结果把紧跟其后的 `dprec_init();`（Display Recorder 初始化）以及
+# patch_disp_debug 插入的 `s3pro_dbg_init_once();` 一起删掉了 ——
+# 编译直接报 `s3pro_dbg_init_once defined but not used`（-Werror=unused-function）。
+#
+# 现在改成：先找到这两个语句的完整尾部，再在它们之后插入，绝不覆盖。
+# 两种锚点：
+#   A（DISP_DEBUG=1，默认）：pregulator = dev; / dprec_init(); / s3pro_dbg_init_once();
+#   B（DISP_DEBUG=0）      ：pregulator = dev; / dprec_init();
+PD_ANCHOR_A = "\tpregulator = dev;\n\tdprec_init();\n\ts3pro_dbg_init_once();\n"
+PD_ANCHOR_B = "\tpregulator = dev;\n\tdprec_init();\n"
 
 PD_DEF = (
     "\n"
@@ -83,8 +94,8 @@ PD_DEF = (
     "struct regulator *s3pro_lcm_vgp;\n"
 )
 
-PD_INIT = (
-    "\tpregulator = dev;\n"
+# 只追加，不含 pregulator = dev; / dprec_init();
+PD_INIT_ADD = (
     "\n"
     "\t/* S3PRO_VGP: 取面板 1.8V regulator 并设到 1.8V（对齐 LOS 14.1 的\n"
     "\t * lcm_vgp_regulator_init）。这里只 get + set_voltage，不 enable ——\n"
@@ -216,22 +227,28 @@ def patch_pd(t):
     if "s3pro_lcm_vgp" in t:
         return t, []
     notes = []
-    if PD_ANCHOR not in t:
-        raise SystemExit("!! primary_display.c 找不到锚点 %r" % PD_ANCHOR)
-    if t.count(PD_ANCHOR) != 1:
-        raise SystemExit("!! 锚点 %r 出现 %d 次（应为 1）" % (PD_ANCHOR, t.count(PD_ANCHOR)))
 
-    # 1) 在 include 区之后插入全局定义：锚在 #include "disp_drv_log.h" 之后
+    # 1) 在 include 区之后插入全局定义
     inc_anchor = '#include "disp_drv_log.h"\n'
-    if inc_anchor in t:
-        t = t.replace(inc_anchor, inc_anchor + PD_DEF, 1)
-        notes.append("primary_display.c: 定义 s3pro_lcm_vgp")
-    else:
+    if inc_anchor not in t:
         raise SystemExit("!! primary_display.c 找不到 %r" % inc_anchor)
+    t = t.replace(inc_anchor, inc_anchor + PD_DEF, 1)
+    notes.append("primary_display.c: 定义 s3pro_lcm_vgp")
 
-    # 2) 替换 pregulator = dev; 那段
-    t = t.replace(PD_ANCHOR, PD_INIT, 1)
-    notes.append("primary_display.c: primary_display_init 里 regulator_get + set_voltage")
+    # 2) 在 primary_display_init 的初始化语句之后【追加】，不覆盖任何原有行
+    if PD_ANCHOR_A in t:
+        if t.count(PD_ANCHOR_A) != 1:
+            raise SystemExit("!! 锚点 A 出现 %d 次（应为 1）" % t.count(PD_ANCHOR_A))
+        t = t.replace(PD_ANCHOR_A, PD_ANCHOR_A + PD_INIT_ADD, 1)
+        notes.append("primary_display.c: 在 dprec_init()+s3pro_dbg_init_once() 之后追加 regulator_get")
+    elif PD_ANCHOR_B in t:
+        if t.count(PD_ANCHOR_B) != 1:
+            raise SystemExit("!! 锚点 B 出现 %d 次（应为 1）" % t.count(PD_ANCHOR_B))
+        t = t.replace(PD_ANCHOR_B, PD_ANCHOR_B + PD_INIT_ADD, 1)
+        notes.append("primary_display.c: 在 dprec_init() 之后追加 regulator_get（DISP_DEBUG=0）")
+    else:
+        raise SystemExit("!! primary_display.c 找不到 pregulator = dev; + dprec_init(); 组合")
+
     return t, notes
 
 
@@ -321,8 +338,8 @@ def main():
     # ---------------- 自检 ----------------
     checks = []
 
-    def chk(name, cond):
-        checks.append((name, bool(cond)))
+    def chk(name, cond, detail=""):
+        checks.append((name, bool(cond), detail))
 
     # 驱动侧
     chk("驱动: 有 regulator 头文件", "#include <linux/regulator/consumer.h>" in drv2)
@@ -353,6 +370,21 @@ def main():
         chk("PD: set_voltage 1.8V", "1800000, 1800000" in pd2)
         chk("PD: 有 pr_alert 打印", 'pr_alert("[S3PRO_VGP]' in pd2)
 
+    # ---- 绝不能破坏 primary_display_init 里原有的初始化语句 ----
+    if pd_exists:
+        chk("PD: dprec_init() 仍存在且唯一",
+            pd2.count("\tdprec_init();") == 1,
+            "出现 %d 次" % pd2.count("\tdprec_init();"))
+        had_dbg = "s3pro_dbg_init_once();" in pd
+        has_dbg = "s3pro_dbg_init_once();" in pd2
+        chk("PD: s3pro_dbg_init_once() 调用未丢失",
+            (not had_dbg) or has_dbg,
+            "原 %s -> 现 %s" % (had_dbg, has_dbg))
+        # 若函数有定义，就必须有调用（防 -Werror=unused-function）
+        if "static void s3pro_dbg_init_once(void)" in pd2:
+            chk("PD: s3pro_dbg_init_once 有调用（防 unused-function）",
+                pd2.count("s3pro_dbg_init_once();") >= 1)
+
     # 结构
     chk("驱动 花括号平衡", drv2.count("{") == drv2.count("}"))
     if pd_exists:
@@ -367,10 +399,11 @@ def main():
     chk("print 字符串不跨行", not bad)
 
     print()
-    for name, ok in checks:
-        print("    %-46s %s" % (name, "OK" if ok else "失败!"))
+    for name, ok, detail in checks:
+        print("    %-46s %s%s" % (name, "OK" if ok else "失败!",
+                                  ("   " + detail) if detail else ""))
     print()
-    if not all(ok for _, ok in checks):
+    if not all(ok for _, ok, _ in checks):
         print("!! 自检未通过，不写文件")
         return 1
 
