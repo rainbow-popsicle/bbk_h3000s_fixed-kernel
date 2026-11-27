@@ -85,7 +85,7 @@ for s in \
     patch_lcm_stock.py patch_lcm_init.py patch_lcm_table.py \
     patch_lcm_gpio_fix.py patch_lcm_init_table.py \
     patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
-    patch_disp_debug.py patch_resume_order.py patch_dsi_config_start.py patch_resume_no_wait_token.py patch_vdo_eof_event.py patch_no_stop_loop.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py \
+    patch_disp_debug.py patch_resume_order.py patch_dsi_config_start.py patch_resume_no_wait_token.py patch_vdo_eof_event.py patch_no_stop_loop.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py patch_lcm_regulator.py \
     patch_dimming_cmdmode.py patch_dimming_early.py patch_rst_new.py patch_stock_timing.py patch_lab_push.py \
     patch_lk_replay.py \
     patch_video_kick.py patch_vmcmd.py \
@@ -611,6 +611,20 @@ if [ "${LK_REPLAY:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_lk_replay.py" ]; the
     "$PY" "$ROOT/scripts/patch_lk_replay.py" . || die "LK 时序实验台补丁失败"
 else
     echo "跳过 LK 时序实验台（LK_REPLAY=${LK_REPLAY:-1}）"
+fi
+
+# ★ S3PRO_VGP: 面板 1.8V 改走 MT6397 的 VGP4 LDO（对齐 LOS 14.1）
+#   反编译 LOS 14.1 DTB 确认：/soc/lcm 的 reg-lcm-1v8-supply = <0x42>
+#   指向 /soc/pwrap@1000d000/mt6397/mt6397regulator/ldo_vgp4
+#   （regulator-name "vgp4"）。设备实测该 LDO 一直 disabled，
+#   而驱动只拉 GPIO_LCD_1V8_EN（经 sed 实际是 ENP/pio96），
+#   所以面板从来没有 1.8V，TPS65132 升不出 VPOS/VNEG -> 黑屏。
+#   LOS 的做法：lcm_resume_power = regulator_enable + 20ms，
+#                 lcm_suspend_power = enn↓2 → enp↓5 → regulator_disable → rst↓5。
+if [ "${LCM_VGP:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_lcm_regulator.py" ]; then
+    "$PY" "$ROOT/scripts/patch_lcm_regulator.py" . || die "面板 1.8V regulator 补丁失败"
+else
+    echo "跳过面板 1.8V regulator 补丁（LCM_VGP=${LCM_VGP:-1}）"
 fi
 
 
@@ -1442,6 +1456,7 @@ CHECK_MARKS=""
 [ "${DSI_CFG_START:-0}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_DSI_CFG_START"
 [ "${RESUME_NO_WAIT_TOKEN:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_NO_WAIT_TOKEN"
 [ "${RESUME_ORDER:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_RESUME_ORDER"
+[ "${LCM_VGP:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_VGP"
 
 if [ -n "$CHECK_MARKS" ]; then
     echo "--- 验证补丁标记是否进入内核镜像 ---"
