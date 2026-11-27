@@ -288,12 +288,17 @@ def patch_drv(t):
     else:
         raise SystemExit("!! 驱动里 suspend_power 段未匹配")
 
-    # 5) RST 第三段 32 -> 15
+    # 5) RST 第三段对齐 LOS 的 15ms（2026-11-27）
+    #    default 已由 patch_lk_replay 改成 5/2/15（完全对齐 LOS），本步只做兼容：
+    #    若仍是旧的 12/12/32（换树未跑 lk_replay），在这里补成 12/12/15；
+    #    若已是 5/2/15（含 d3=15），无需再改。
     if D3_OLD in t:
         t = t.replace(D3_OLD, D3_NEW, 1)
-        notes.append("驱动: RST 第三段 32ms -> 15ms")
+        notes.append("驱动: RST 第三段 32ms -> 15ms（旧 default 兼容）")
+    elif "default: d1 = 5;  d2 = 2;  d3 = 15;" in t:
+        notes.append("驱动: default 已是 LOS 5/2/15（lk_replay 已对齐），跳过")
     else:
-        raise SystemExit("!! 驱动里 default variant 未匹配")
+        raise SystemExit("!! 驱动里 default variant 未匹配（既非 12/12/32 也非 5/2/15）")
 
     # 标记
     t = t.replace("/***** S3PRO_VGP *****/", "")

@@ -84,8 +84,8 @@ for s in \
     patch_battery_qmax.py patch_battery_soc.py patch_battery_fgadc.py \
     patch_lcm_stock.py patch_lcm_init.py patch_lcm_table.py \
     patch_lcm_gpio_fix.py patch_lcm_init_table.py \
-    patch_lcm_debug.py patch_lcm_esd_off.py patch_dsi_start.py \
-    patch_disp_debug.py patch_resume_order.py patch_dsi_config_start.py patch_resume_no_wait_token.py patch_vdo_eof_event.py patch_no_stop_loop.py patch_lcm_trace.py patch_lcm_power_seq.py patch_lcm_readid.py patch_lcm_regulator.py \
+    patch_lcm_debug.py \
+    patch_disp_debug.py patch_resume_order.py patch_resume_no_wait_token.py patch_vdo_eof_event.py patch_no_stop_loop.py patch_lcm_trace.py patch_lcm_readid.py patch_lcm_regulator.py \
     patch_dimming_cmdmode.py patch_dimming_early.py patch_rst_new.py patch_stock_timing.py patch_lab_push.py \
     patch_lk_replay.py \
     patch_video_kick.py patch_vmcmd.py \
@@ -704,38 +704,13 @@ else
     echo "跳过面板初始化时序补丁（LCM_INIT_PATCH=${LCM_INIT_PATCH:-0}）—— 保持能显示的 v1 行为"
 fi
 
-# ★ 关掉面板 ESD 自检。
-#   实机证据（v1 版：画面正常，但约 72 秒后黑屏、背光仍亮，之后按电源键也无法恢复）：
-#     [72.4s] 起 CMDQ 错误块 ×37
-#     display_esd_che 相关日志 ×2308、primary_display_esd_recovery ×5
-#     DSI0 / DSI1 最终都 idle（显示引擎停转），背光仍是 102
-#   机制：ESD 线程每 2 秒读面板寄存器（cmd 0x0A/期望 0x9C），读超时即判定面板异常，
-#         触发 ddp_dsi_stop → DSI_Reset → lcm_init，反复把显示引擎停下，画面再也回不来。
-#   作者内核全程 0 次 esd_recovery。
-#   本补丁【只关 ESD】，不动 lcm_init/lcm_resume 的时序（那是 v2 的改动，默认关闭）。
-if [ "${LCM_ESD_OFF:-0}" = "1" ] && [ "${LCMPATCH:-1}" = "1" ] \
-   && [ -f "$ROOT/scripts/patch_lcm_esd_off.py" ]; then
-    echo "--- 关闭面板 ESD 自检（切断 recovery 死循环）---"
-    "$PY" "$ROOT/scripts/patch_lcm_esd_off.py" . || die "关闭 ESD 失败"
-else
-    echo "跳过 ESD 关闭（LCM_ESD_OFF=${LCM_ESD_OFF:-0}）"
-fi
+# ESD 关闭补丁已移除（2026-11-27）：对齐 LOS 14.1 —— LOS 的 esd_check_enable=1（开着且正常），
+# 我们此前关 ESD 是为了切断 recovery 干扰，与 LOS 不一致，故移除。需要回退见 scripts_backup_20261127。
 
 
-# ★ 移除 ddp_dsi_start 尾部【自加】的 DSI_Start()（原厂反汇编纠错，见文档 §7.11）。
-#   历史：早期据"开机 DSI_START=1 / 唤醒黑屏=0、其余寄存器一致"加过 DSI_Start()。
-#   纠错：定点反汇编原厂 3.18.35 证明 ddp_dsi_start 单/双 DSI 分支都不调 DSI_Start；
-#        原厂只在 ddp_dsi_trigger（每帧触发）里调，而我们 trigger 路径本来就有，
-#        start 里这处属于无原厂依据的重复动作 → 移除。
-#   脚本幂等：找不到标记块安全跳过；只删 start 尾部那块，不动 trigger 的 DSI_Start。
-#   ⚠️ 2026-11-23 发现：源码里从来就没有那个标记块，所以本步实际是**空操作**，
-#      无论开关如何都不会增删 DSI_Start。默认改成 0（本步实际为空操作）。
-if [ "${DSI_START_FIX:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_dsi_start.py" ]; then
-    echo "--- 移除 ddp_dsi_start 自加的 DSI_Start()（对齐原厂）---"
-    "$PY" "$ROOT/scripts/patch_dsi_start.py" . || die "移除自加 DSI_Start 失败"
-else
-    echo "跳过移除自加 DSI_Start（DSI_START_FIX=${DSI_START_FIX:-0}；该步实际为空操作）"
-fi
+# DSI_Start 移除补丁已删除（2026-11-27）：该补丁针对的「ddp_dsi_start 尾部自加 DSI_Start」
+# 在源码中从来不存在（原厂反汇编 §7.11 已证），是空操作死代码，故清理。
+# DSI_Start 由 ddp_dsi_trigger（每帧触发）正常调用，不需任何补丁干预。
 
 
 
@@ -768,31 +743,9 @@ else
     echo "跳过 resume 顺序补丁（RESUME_ORDER=${RESUME_ORDER:-1}）"
 fi
 
-# ★★★★ ddp_dsi_config 的 video 分支补 DSI_Start（默认开）—— 死锁的「第一推动」
-#   LOS 14.1 的 ddp_dsi_config @0x476b88 收尾段（0x4792f0-0x479310）是：
-#       ldr w0,[x29,#0x70] / cbz -> 跳过     ; = dsi_config->mode != CMD_MODE
-#       bl DSI_Start                          ; ★ 先启动 DSI
-#       bl Dsi_Config_VDO_Timing              ; 再配时序
-#   我们的顺序少了 DSI_Start。
-#
-#   为什么这一句决定生死（全链路来自源码）：
-#     _should_trigger_path() 在 CMDQ 模式下 return 0 -> _trigger_display_interface 不调 dpmgr_path_trigger
-#     _should_insert_wait_frame_done_token() 在 CMDQ 模式下 return 1
-#       -> config 队列插入 cmdqRecWaitNoClear(CMDQ_EVENT_MUTEX0_STREAM_EOF)  等事件 53
-#     _cmdq_build_trigger_loop 第一条也是 cmdqRecWait(53)（CMDQ_CODE_WFE，等待并清除）
-#     而 dpmgr_path_start 里的 ddp_dsi_start 把 DSI_START 清 0 -> DSI 不输出 -> 无帧 -> 53 永不来
-#       -> 两个队列全卡 -> trigger loop 里的 dpmgr_path_trigger 永不执行
-#       -> ddp_dsi_trigger 永不执行 -> DSI_Start 永不调用 -> DSI_START 永远 0（闭环）
-#     dpmgr_path_trigger 在 CMDQ 模式下【只有】trigger loop 一个调用点，所以 trigger loop 一卡就全死。
-#
-#   config 在 path_start 之前，此处 DSI_Start 能让 DSI 真实输出一帧 -> MUTEX0 产生真实的 53
-#   -> 两道等待都放行 -> 链条自己转起来。（这与软件伪造事件不同，不依赖任何竞态。）
-if [ "${DSI_CFG_START:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_dsi_config_start.py" ]; then
-    echo "--- ddp_dsi_config 补 DSI_Start（死锁第一推动，对齐 LOS 14.1）---"
-    "$PY" "$ROOT/scripts/patch_dsi_config_start.py" . || die "ddp_dsi_config 点火补丁失败"
-else
-    echo "跳过 ddp_dsi_config 点火（DSI_CFG_START=${DSI_CFG_START:-0}）"
-fi
+# dsi_config_start 点火补丁已删除（2026-11-27）：已证伪，2026-11-25 实测 config 阶段 MODE=CMD，
+# 此时启动 DSI 会 busy，ddp_dsi_stop 两个 while(1) 死等 → "dsi1 is busy" → suspend 卡死。
+# LOS 14.1 的 config 收尾 DSI_Start 是在 video mode 条件下，我们照搬反而有害。需要回退见 scripts_backup_20261127。
 
 # ★★★ video mode 的 trigger-loop 点火（默认开）—— 死锁根因的直接修复
 #   背景（LOS 14.1 逆向确认，见 docs §8.19）：
@@ -854,16 +807,8 @@ else
 fi
 
 
-# ★ 实验：反转 lcm_resume 的 GPIO 上电顺序（默认关闭，LCM_POWER_SEQ=1 开启）
-#   把「先 RST 复位 → 再 VSP/VSN 供电」改成「先 VSP/VSN 供电 → 再 RST 复位」。
-#   验证假设：复位打在没上电的面板上 = 无效复位，导致"命令全发/寄存器健康但纯黑"。
-#   必须在 LCM_STOCK 之后运行（后者会重写 lcm_resume 整段）。仅实验用，默认 0。
-if [ "${LCM_POWER_SEQ:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_lcm_power_seq.py" ]; then
-    echo "--- 实验：反转面板 GPIO 上电顺序（先供电后复位）---"
-    "$PY" "$ROOT/scripts/patch_lcm_power_seq.py" . || die "GPIO 时序实验补丁失败"
-else
-    echo "跳过 GPIO 时序实验（LCM_POWER_SEQ=${LCM_POWER_SEQ:-0}）"
-fi
+# lcm_power_seq GPIO 时序实验补丁已删除（2026-11-27）：其验证已被 LK_REPLAY 实验台覆盖
+# （debugfs variant 可切上电顺序），无需单独脚本。需要回退见 scripts_backup_20261127。
 
 
 # ★ read_id 探针：把 mtk_lcm_s3pro_readback() 链接进来，直接问面板"收到命令没"。
@@ -1453,7 +1398,6 @@ CHECK_MARKS=""
 [ "${LK_REPLAY:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_LKREPLAY"
 [ "${NO_STOP_LOOP:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_NO_STOP_LOOP"
 [ "${VDO_EOF_EVENT:-0}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_VDO_EOF"
-[ "${DSI_CFG_START:-0}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_DSI_CFG_START"
 [ "${RESUME_NO_WAIT_TOKEN:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_NO_WAIT_TOKEN"
 [ "${RESUME_ORDER:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_RESUME_ORDER"
 [ "${LCM_VGP:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_VGP"

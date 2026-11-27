@@ -36,8 +36,9 @@ vendor id 来自 cmdline：get_lcm_vendor_id @0x458608 在 g_cmdline 里找
     [S3PRO_LCM_INIT] level=0 -> 23-item BOE table
 刷机后 `dmesg | grep S3PRO_LCM_INIT` 即可看到实际电平与选中的表。
 
-291 项表未编译进本驱动（本机 vendor_id=0 永远走不到），
-若 vendor_id==1 会打印 "291-item table NOT compiled, skip" 并安全返回。
+291 项表已编译进本驱动（2026-11-27 对齐 LOS 14.1，数据来自
+kernel-patches/lcm-table/los141_table291.h）；vendor_id==1 时真推 291 项表。
+本机 vendor_id=0 走不到该分支，不影响实际行为。
 
 === 用法 ===
     python patch_lcm_init_table.py <内核树根> [--dry-run]
@@ -63,6 +64,7 @@ extern char *saved_command_line;
  * 所以把「按表推」包成两个辅助函数，实现插在 lcm_resume 之前（表定义之后）。 */
 static void s3pro_lcm_push_23(void);
 static void s3pro_lcm_push_109(void);
+static void s3pro_lcm_push_291(void);
 
 static int s3pro_lcm_vendor_id(void)
 {
@@ -96,8 +98,9 @@ static void lcm_init(void)
 	pr_alert("[S3PRO_LCM_INIT] cmdline vendor_id=%d\\n", vid);
 
 	if (vid == 1) {
-		/* LOS 14.1 这里推 291 项表，但本驱动没编译那张表 */
-		pr_alert("[S3PRO_LCM_INIT] vendor_id==1 -> 291-item table NOT compiled, skip\\n");
+		/* LOS 14.1: vendor id==1 -> 291 项表 @0xf097b0（已编进本驱动） */
+		pr_alert("[S3PRO_LCM_INIT] vendor_id==1 -> 291-item table\\n");
+		s3pro_lcm_push_291();
 		return;
 	}
 
@@ -149,6 +152,14 @@ static void s3pro_lcm_push_109(void)
 {
 \tpush_table(s3pro_init_table_b,
 \t\t   sizeof(s3pro_init_table_b) / sizeof(struct LCM_setting_table), 1);
+}
+
+/* LOS 14.1 的 291 项表（@0xf097b0），vendor_id==1 时使用。
+ * 表数据由本脚本从 kernel-patches/lcm-table/los141_table291.h 注入。 */
+static void s3pro_lcm_push_291(void)
+{
+\tpush_table(s3pro_lcm_291_table,
+\t\t   sizeof(s3pro_lcm_291_table) / sizeof(struct LCM_setting_table), 1);
 }
 
 """
@@ -242,12 +253,25 @@ def main():
     t = t.replace(OLD, NEW, 1)
     print("  已把 lcm_init 换成三级选表 + 推表")
 
-    # 3) 在 lcm_resume 之前插入推送实现（必须在 s3pro_init_table_a/b 定义之后）
+    # 3) 在 lcm_resume 之前插入 291 项表数据 + 推送实现（必须在 s3pro_init_table_a/b 定义之后）
     if t.count(IMPL_ANCHOR) != 1:
         print("!! lcm_resume 锚点匹配 %d 次（应为 1），无法插入实现" % t.count(IMPL_ANCHOR))
         return 1
-    t = t.replace(IMPL_ANCHOR, IMPL + IMPL_ANCHOR, 1)
-    print("  已在 lcm_resume 之前插入 push_23 / push_109 实现")
+    # 291 表数据：从项目内的 los141_table291.h 读取（表中的符号名改成驱动内唯一名）
+    t291_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "..", "kernel-patches", "lcm-table", "los141_table291.h")
+    table291 = ""
+    if os.path.exists(t291_path):
+        table291 = open(t291_path, encoding="utf-8", errors="replace").read()
+        table291 = table291.replace("lcm_291_table", "s3pro_lcm_291_table")
+        table291 = "/* S3PRO_LCM_INIT: LOS 14.1 的 291 项表（vendor_id==1） */\n" + table291 + "\n"
+        print("  已加载 291 项表数据（%d 字节）" % len(table291))
+    else:
+        print("!! 找不到 291 项表数据文件: %s" % t291_path)
+        return 1
+    # 顺序：表数据 → 实现（实现引用表，C 要求先定义后使用）
+    t = t.replace(IMPL_ANCHOR, table291 + IMPL + IMPL_ANCHOR, 1)
+    print("  已在 lcm_resume 之前插入 291 表 + push_23/109/291 实现")
 
     need = []
     for hdr in INCLUDES:
@@ -275,11 +299,15 @@ def main():
         "gpio_get_value": "gpio_get_value(id_gpio)" in c,
         "23 项分支": "level=0 -> 23-item BOE table" in c,
         "109 项分支": "level=1 -> 109-item table" in c,
-        "291 项安全跳过": "291-item table NOT compiled, skip" in c,
+        "291 项真推": "s3pro_lcm_push_291();" in c,
+        "291 表已编译": "s3pro_lcm_291_table[]" in c,
+        "291 分支无 skip": "291-item table NOT compiled" not in c,
         "push_23 实现": "static void s3pro_lcm_push_23(void)\n{" in c,
         "push_109 实现": "static void s3pro_lcm_push_109(void)\n{" in c,
+        "push_291 实现": "static void s3pro_lcm_push_291(void)\n{" in c,
         "实现里引用表 A": "push_table(s3pro_init_table_a," in c,
         "实现里引用表 B": "push_table(s3pro_init_table_b," in c,
+        "实现里引用表 291": "push_table(s3pro_lcm_291_table," in c,
         "lcm_init 调用 push_23": "s3pro_lcm_push_23();" in c,
         "lcm_init 调用 push_109": "s3pro_lcm_push_109();" in c,
         "花括号配平": brace_balance(c) == 0,
