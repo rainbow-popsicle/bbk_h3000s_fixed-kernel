@@ -65,6 +65,10 @@ on:
         description: '★★核心修复：video mode 下 trigger loop 启动时补发 MUTEX0_STREAM_EOF(event53)「第一推动」。MTK 源码 cmd mode 分支明写「第一次必须设 STREAM_EOF 否则卡死循环」，video 分支被 #if 0 关掉；LOS 因 suspend 不停 loop 无需此项。2026-11-27 实测确认根因：S3PRO_TRIGGER=0次 + trigger loop 永久等 event53 + D-PHY 停在 LP(1/1) + ESD recovery×5 死循环。注：11-25 的「无效」是第一版被 dpmgr_path_is_idle 挡住，已改无条件点火但未再验证；本项为改进版，默认开'
         type: boolean
         default: true
+      ulps_wakeup_fix:
+        description: '★★验证性修复：把 DSI_SleepOut 的 ULPS_WAKEUP 从 0x22E09 改成健康态实测值 0x23000。0x22E09 是 MTK 按 520MHz 算的，本机 PLL=500MHz；健康态(能亮)寄存器=0x23000、唤醒黑屏态=0x22e09，是逐寄存器 diff 中唯一独立于“无帧”的硬差异。LOS 内核无此值。刷机后若仍黑可关此项回退（默认开）'
+        type: boolean
+        default: true
       lcm_init_table:
         description: '★★核心：让 lcm_init 做三级选表+推表（vendor id / pio89 电平 → 23/109 项），对齐 LOS 14.1；开机时 kernel 就推表而不是全靠 LK（默认开）'
         type: boolean
@@ -149,6 +153,7 @@ jobs:
           LCM_VGP: ${{ (inputs.lcm_vgp && '1') || '0' }}
           NO_STOP_LOOP: ${{ (inputs.no_stop_loop && '1') || '0' }}
           VDO_EOF_EVENT: ${{ (inputs.vdo_eof_event && '1') || '0' }}
+          ULPS_WAKEUP_FIX: ${{ (inputs.ulps_wakeup_fix && '1') || '0' }}
           LCM_INIT_TABLE: ${{ (inputs.lcm_init_table && '1') || '0' }}
           LAB_PUSH: ${{ (inputs.lab_push && '1') || '0' }}
           LK_REPLAY: ${{ (inputs.lk_replay && '1') || '0' }}
