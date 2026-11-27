@@ -62,9 +62,9 @@ on:
         type: boolean
         default: true
       vdo_eof_event:
-        description: '[已证伪·默认关] 在 video mode 的 trigger loop 启动后软件伪造 MUTEX0_STREAM_EOF(53)。2026-11-25 实测：dmesg 打出 is_idle=0（MTK 原本的 if 会跳过）、改成无条件后事件设了但 trig 仍为 0 → 无效。且无条件设事件可能干扰 CMDQ 状态机，故默认关闭'
+        description: '★★核心修复：video mode 下 trigger loop 启动时补发 MUTEX0_STREAM_EOF(event53)「第一推动」。MTK 源码 cmd mode 分支明写「第一次必须设 STREAM_EOF 否则卡死循环」，video 分支被 #if 0 关掉；LOS 因 suspend 不停 loop 无需此项。2026-11-27 实测确认根因：S3PRO_TRIGGER=0次 + trigger loop 永久等 event53 + D-PHY 停在 LP(1/1) + ESD recovery×5 死循环。注：11-25 的「无效」是第一版被 dpmgr_path_is_idle 挡住，已改无条件点火但未再验证；本项为改进版，默认开'
         type: boolean
-        default: false
+        default: true
       lcm_init_table:
         description: '★★核心：让 lcm_init 做三级选表+推表（vendor id / pio89 电平 → 23/109 项），对齐 LOS 14.1；开机时 kernel 就推表而不是全靠 LK（默认开）'
         type: boolean
