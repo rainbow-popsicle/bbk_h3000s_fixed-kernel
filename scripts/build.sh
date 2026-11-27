@@ -757,11 +757,11 @@ fi
 #   而 _cmdq_start_trigger_loop 里 video mode 分支的点火代码被 #if 0 关掉了，
 #   MTK 自己在 cmd mode 那行写的注释是「第一次必须设 STREAM_EOF，否则卡死循环」。
 #   本补丁把那段 #if 0 取消，让 video mode 也在 path 空闲时补一次 MUTEX0_STREAM_EOF。
-if [ "${VDO_EOF_EVENT:-0}" = "1" ] && [ -f "$ROOT/scripts/patch_vdo_eof_event.py" ]; then
+if [ "${VDO_EOF_EVENT:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_vdo_eof_event.py" ]; then
     echo "--- 启用 video mode 的 trigger-loop 点火（MUTEX0_STREAM_EOF）---"
     "$PY" "$ROOT/scripts/patch_vdo_eof_event.py" . || die "video mode 点火补丁失败"
 else
-    echo "跳过 video mode 点火（VDO_EOF_EVENT=${VDO_EOF_EVENT:-0}）"
+    echo "跳过 video mode 点火（VDO_EOF_EVENT=${VDO_EOF_EVENT:-1}）"
 fi
 
 # ★★★ 让 suspend 不停 CMDQ trigger loop（默认开）—— 对齐 LOS 14.1
@@ -1397,7 +1397,7 @@ CHECK_MARKS=""
 [ "${STOCK_TIMING:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_TMG"
 [ "${LK_REPLAY:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_LKREPLAY"
 [ "${NO_STOP_LOOP:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_NO_STOP_LOOP"
-[ "${VDO_EOF_EVENT:-0}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_VDO_EOF"
+[ "${VDO_EOF_EVENT:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_VDO_EOF"
 [ "${RESUME_NO_WAIT_TOKEN:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_NO_WAIT_TOKEN"
 [ "${RESUME_ORDER:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_RESUME_ORDER"
 [ "${LCM_VGP:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_VGP"
