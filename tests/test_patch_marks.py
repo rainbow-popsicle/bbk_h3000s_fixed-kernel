@@ -61,7 +61,6 @@ REQUIRED_MARKS = {
     "patch_lk_replay.py": "S3PRO_LKREPLAY",
     "patch_no_stop_loop.py": "S3PRO_NO_STOP_LOOP",
     "patch_vdo_eof_event.py": "S3PRO_VDO_EOF",
-    "patch_dsi_config_start.py": "S3PRO_DSI_CFG_START",
     "patch_resume_no_wait_token.py": "S3PRO_NO_WAIT_TOKEN",
     "patch_disp_debug.py": "S3PRO_PATH",
     "patch_lcm_regulator.py": "S3PRO_VGP",

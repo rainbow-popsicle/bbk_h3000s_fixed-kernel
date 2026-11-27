@@ -74,7 +74,14 @@ def main():
         print("FAIL: 原始驱动备份不存在: %s" % SRC_DRIVER)
         return 1
 
-    tmp = tempfile.mkdtemp(prefix="panel_chain_")
+    # 注意：不用 tempfile.mkdtemp()。本地 Windows 沙箱禁止写系统临时目录
+    # （PermissionError: [WinError 5] 拒绝访问 ...\Temp\...\drivers），
+    # 而 CI 的 Linux 没这个限制。放到仓库内 work/ 后两边都能跑，
+    # 且 work/ 已在 .gitignore 里。
+    tmp = os.path.join(ROOT, "work", "panel_chain")
+    if os.path.exists(tmp):
+        shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp, exist_ok=True)
     drv_dir = os.path.join(tmp, "drivers", "misc", "mediatek", "lcm",
                            "nt35523_wqxga_dsi_vdo_sharp")
     os.makedirs(drv_dir)
