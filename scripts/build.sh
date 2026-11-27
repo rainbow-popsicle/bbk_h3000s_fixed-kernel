@@ -88,7 +88,7 @@ for s in \
     patch_disp_debug.py patch_resume_order.py patch_resume_no_wait_token.py patch_vdo_eof_event.py patch_no_stop_loop.py patch_lcm_trace.py patch_lcm_readid.py patch_lcm_regulator.py \
     patch_dimming_cmdmode.py patch_dimming_early.py patch_rst_new.py patch_stock_timing.py patch_lab_push.py \
     patch_lk_replay.py \
-    patch_video_kick.py patch_vmcmd.py \
+    patch_video_kick.py patch_vmcmd.py patch_ulps_wakeup.py \
     patch_cm36686_i2c.py patch_cm36686_dts.py \
     patch_alsps_eint.py patch_alsps_ap3220.py patch_alsps_abs.py \
     patch_vcodec_irq.py patch_vcodec_clk.py patch_bt_bluez.py \
@@ -764,6 +764,19 @@ else
     echo "跳过 video mode 点火（VDO_EOF_EVENT=${VDO_EOF_EVENT:-1}）"
 fi
 
+# ★★★ ULPS_WAKEUP 验证性修复（默认开，2026-11-27）
+#   逐寄存器实测：健康态(能亮) DSI_PHY_TIMECON4=0x23000，唤醒黑屏态=0x22e09。
+#   0x22E09 来自 DSI_SleepOut()，注释写 "cycle to 1ms for 520MHz"，但本机
+#   PLL_CLOCK=500MHz；LOS 内核里搜不到 0x22e09。
+#   本补丁把该常量改回健康值 0x23000（等更久），验证 D-PHY 停在 LP 是否由此引起。
+#   验证性补丁：刷机后若仍黑可关开关回退。
+if [ "${ULPS_WAKEUP_FIX:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_ulps_wakeup.py" ]; then
+    echo "--- ULPS_WAKEUP 0x22E09 -> 0x23000（对齐健康态，验证 D-PHY LP）---"
+    "$PY" "$ROOT/scripts/patch_ulps_wakeup.py" . || die "ULPS_WAKEUP 补丁失败"
+else
+    echo "跳过 ULPS_WAKEUP 修复（ULPS_WAKEUP_FIX=${ULPS_WAKEUP_FIX:-1}）"
+fi
+
 # ★★★ 让 suspend 不停 CMDQ trigger loop（默认开）—— 对齐 LOS 14.1
 #   LOS 14.1 的 primary_display_suspend @0x4a8e0c 全程不调用 _cmdq_stop_trigger_loop，
 #   trigger loop 一直活着；resume 后硬件产生 MUTEX0_STREAM_EOF(53)，链条自然接上。
@@ -1401,6 +1414,7 @@ CHECK_MARKS=""
 [ "${RESUME_NO_WAIT_TOKEN:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_NO_WAIT_TOKEN"
 [ "${RESUME_ORDER:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_RESUME_ORDER"
 [ "${LCM_VGP:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_VGP"
+[ "${ULPS_WAKEUP_FIX:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_ULPS_FIX"
 
 if [ -n "$CHECK_MARKS" ]; then
     echo "--- 验证补丁标记是否进入内核镜像 ---"
