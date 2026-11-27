@@ -57,6 +57,10 @@ on:
         description: '★★★★核心：把 disp_lcm_resume 从 config 之后挪到 trigger 之后、start_trigger_loop 之前。实测 config 阶段 phylc=0（MIPI 时钟未开），原位置推表命令无通道被丢弃，面板收不到 sleep-out 停在 sleep-in 深睡；新位置三个约束同时满足（时钟已开 / 两个 is_busy 检查都在前 / loop 未启动）。需配合 cmd_mode_init=0，已一并改默认（默认开）'
         type: boolean
         default: true
+      lcm_vgp:
+        description: '★★★★对齐 LOS：面板 1.8V 改走 MT6397 的 VGP4 LDO。反编译 LOS 14.1 DTB 确认 /soc/lcm 的 reg-lcm-1v8-supply=<0x42> 指向 ldo_vgp4（regulator-name "vgp4"）；设备实测它一直 disabled，而驱动只拉 GPIO（经 sed 实际是 ENP/pio96），所以面板从没拿到 1.8V，TPS65132 升不出 VPOS/VNEG。LOS 的做法是 regulator_enable + 20ms / regulator_disable（默认开）'
+        type: boolean
+        default: true
       dsi_config_start:
         description: '[已证伪·默认关] 在 ddp_dsi_config 出口补 DSI_Start。2026-11-25 实测：config 阶段 DSI_MODE_CTRL.MODE 还是 CMD(0)，此时启动 DSI 会让它进入 busy，而 _dsi_is_video_mode() 读寄存器返回 0 → DSI_WaitForNotBusy 走等待路径超时 #572 次；更严重的是 ddp_dsi_stop 里两个 while(1) 死等 busy 清除 → dsi1 is busy 反复打印 → suspend 卡死 → 黑屏。必须关闭'
         type: boolean
@@ -155,6 +159,7 @@ jobs:
           STOCK_TIMING: ${{ (inputs.stock_timing && '1') || '0' }}
           RESUME_NO_WAIT_TOKEN: ${{ (inputs.resume_no_wait_token && '1') || '0' }}
           RESUME_ORDER: ${{ (inputs.resume_order && '1') || '0' }}
+          LCM_VGP: ${{ (inputs.lcm_vgp && '1') || '0' }}
           DSI_CFG_START: ${{ (inputs.dsi_config_start && '1') || '0' }}
           NO_STOP_LOOP: ${{ (inputs.no_stop_loop && '1') || '0' }}
           VDO_EOF_EVENT: ${{ (inputs.vdo_eof_event && '1') || '0' }}
