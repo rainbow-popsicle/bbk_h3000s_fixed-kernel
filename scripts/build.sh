@@ -88,7 +88,7 @@ for s in \
     patch_disp_debug.py patch_resume_order.py patch_resume_no_wait_token.py patch_vdo_eof_event.py patch_no_stop_loop.py patch_lcm_trace.py patch_lcm_readid.py patch_lcm_regulator.py \
     patch_dimming_cmdmode.py patch_dimming_early.py patch_rst_new.py patch_stock_timing.py patch_lab_push.py \
     patch_lk_replay.py \
-    patch_video_kick.py patch_vmcmd.py patch_ulps_wakeup.py \
+    patch_video_kick.py patch_vmcmd.py patch_ulps_wakeup.py patch_dsi_start_probe.py \
     patch_cm36686_i2c.py patch_cm36686_dts.py \
     patch_alsps_eint.py patch_alsps_ap3220.py patch_alsps_abs.py \
     patch_vcodec_irq.py patch_vcodec_clk.py patch_bt_bluez.py \
@@ -777,6 +777,18 @@ else
     echo "跳过 ULPS_WAKEUP 修复（ULPS_WAKEUP_FIX=${ULPS_WAKEUP_FIX:-1}）"
 fi
 
+# ★诊断：在 ddp_dsi_start/stop 入口打点 module 值（验证 DUAL_EN 丢失候选）
+#   实测健康 dsi1 com=0x12(DUAL_EN=1)/start=1，黑屏 com=0x2/start=0。
+#   DUAL_EN 置/清都绑定 module==DSIDUAL；打点看唤醒时 start/stop 的 module 是否对称。
+#   日志 tag: [S3PRO_START_PROBE]。刷机后: adb shell dmesg | grep S3PRO_START_PROBE
+#   判据: start is_dual=0 而 stop is_dual=1 -> 候选A(module不对称)实锤。
+if [ "${DSI_START_PROBE:-1}" = "1" ] && [ -f "$ROOT/scripts/patch_dsi_start_probe.py" ]; then
+    echo "--- 打点 ddp_dsi_start/stop module（S3PRO_START_PROBE）---"
+    "$PY" "$ROOT/scripts/patch_dsi_start_probe.py" . || die "dsi_start module 打点失败"
+else
+    echo "跳过 dsi_start module 打点（DSI_START_PROBE=${DSI_START_PROBE:-1}）"
+fi
+
 # ★★★ 让 suspend 不停 CMDQ trigger loop（默认开）—— 对齐 LOS 14.1
 #   LOS 14.1 的 primary_display_suspend @0x4a8e0c 全程不调用 _cmdq_stop_trigger_loop，
 #   trigger loop 一直活着；resume 后硬件产生 MUTEX0_STREAM_EOF(53)，链条自然接上。
@@ -1415,6 +1427,7 @@ CHECK_MARKS=""
 [ "${RESUME_ORDER:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_RESUME_ORDER"
 [ "${LCM_VGP:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_VGP"
 [ "${ULPS_WAKEUP_FIX:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_ULPS_FIX"
+[ "${DSI_START_PROBE:-1}" = "1" ] && CHECK_MARKS="$CHECK_MARKS S3PRO_START_PROBE"
 
 if [ -n "$CHECK_MARKS" ]; then
     echo "--- 验证补丁标记是否进入内核镜像 ---"

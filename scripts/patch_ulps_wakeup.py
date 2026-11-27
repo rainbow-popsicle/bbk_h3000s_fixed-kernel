@@ -46,6 +46,7 @@ OLD = ("\t\t/* cycle to 1ms for 520MHz */\n"
 NEW = ("\t\t/* S3PRO_ULPS_FIX: 原值是 MTK 按 520MHz 算的 ULPS 唤醒等待；\n"
        "\t\t * 本机 PLL_CLOCK=500MHz。实测健康态(能亮)此寄存器=0x23000，\n"
        "\t\t * 唤醒黑屏态是旧值（本函数写入）。改回健康值验证 D-PHY LP 问题。 */\n"
+       "\t\tpr_alert(\"[S3PRO_ULPS_FIX] ULPS_WAKEUP -> 0x23000\\n\");\n"
        "\t\tDSI_OUTREGBIT(cmdq, DSI_PHY_TIMCON4_REG, DSI_REG[i]->DSI_PHY_TIMECON4, ULPS_WAKEUP,\n"
        "\t\t\t      0x23000);")
 
@@ -108,6 +109,7 @@ def main():
     c = open(path, encoding="utf-8", errors="surrogateescape").read()
     checks = {
         "标记存在": MARK in c,
+        "标记是字符串常量(能进镜像)": 'pr_alert("[%s]' % MARK in c,
         "0x22E09 已移除": "0x22E09" not in c,
         "0x23000 已写入": "ULPS_WAKEUP,\n\t\t\t      0x23000);" in c,
         "在 DSI_SleepOut 函数体内": ("DSI_SleepOut" in c and
