@@ -141,9 +141,11 @@ def main():
             "gpio_get_value(id_gpio)": "读 pio89 电平",
             "level=0 -> 23-item BOE table": "电平0 → 23 项 BOE",
             "level=1 -> 109-item table": "电平1 → 109 项",
-            "291-item table NOT compiled, skip": "vendor_id==1 安全跳过",
+            "s3pro_lcm_push_291();": "vendor_id==1 真推 291 项表（2026-11-27 对齐 LOS）",
+            "s3pro_lcm_291_table[]": "291 项表数据已编译进驱动",
             "static void s3pro_lcm_push_23(void)\n{": "push_23 实现（在表之后）",
             "static void s3pro_lcm_push_109(void)\n{": "push_109 实现（在表之后）",
+            "static void s3pro_lcm_push_291(void)\n{": "push_291 实现（在表之后）",
         }
         for needle, label in init_checks.items():
             ok = needle in code
