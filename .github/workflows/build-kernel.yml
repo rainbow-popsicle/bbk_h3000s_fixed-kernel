@@ -69,6 +69,10 @@ on:
         description: '★★验证性修复：把 DSI_SleepOut 的 ULPS_WAKEUP 从 0x22E09 改成健康态实测值 0x23000。0x22E09 是 MTK 按 520MHz 算的，本机 PLL=500MHz；健康态(能亮)寄存器=0x23000、唤醒黑屏态=0x22e09，是逐寄存器 diff 中唯一独立于“无帧”的硬差异。LOS 内核无此值。刷机后若仍黑可关此项回退（默认开）'
         type: boolean
         default: true
+      dsi_start_probe:
+        description: '★诊断打点：在 ddp_dsi_start/stop 入口打印 module 参数（tag [S3PRO_START_PROBE]）。规格书确认面板是 8-lane 双 MIPI，实测健康态 dsi1 DUAL_EN=1/start=1、黑屏 DUAL_EN=0/start=0；DUAL_EN 置/清都绑定 module==DSIDUAL。打点用于确认唤醒时 start/stop 的 module 是否对称（区分 DUAL_EN 丢失候选 A/B）。刷机后: adb shell dmesg | grep S3PRO_START_PROBE（默认开，纯日志无副作用）'
+        type: boolean
+        default: true
       lcm_init_table:
         description: '★★核心：让 lcm_init 做三级选表+推表（vendor id / pio89 电平 → 23/109 项），对齐 LOS 14.1；开机时 kernel 就推表而不是全靠 LK（默认开）'
         type: boolean
@@ -154,6 +158,7 @@ jobs:
           NO_STOP_LOOP: ${{ (inputs.no_stop_loop && '1') || '0' }}
           VDO_EOF_EVENT: ${{ (inputs.vdo_eof_event && '1') || '0' }}
           ULPS_WAKEUP_FIX: ${{ (inputs.ulps_wakeup_fix && '1') || '0' }}
+          DSI_START_PROBE: ${{ (inputs.dsi_start_probe && '1') || '0' }}
           LCM_INIT_TABLE: ${{ (inputs.lcm_init_table && '1') || '0' }}
           LAB_PUSH: ${{ (inputs.lab_push && '1') || '0' }}
           LK_REPLAY: ${{ (inputs.lk_replay && '1') || '0' }}
