@@ -211,7 +211,7 @@ SP_NEW = """	/* S3PRO_VGP: 对齐 LOS 14.1 的 lcm_suspend_power 顺序
 """
 
 # RST 第三段：32 -> 15（LOS 值）
-D3_OLD = "\tdefault: d1 = 12; d2 = 12; d3 = 32; vsp_first = 1; break;\t/* 原厂顺序（2026-11-26 改为默认） */"
+D3_OLD = "\tdefault: d1 = 12; d2 = 12; d3 = 32; vsp_first = 1; break;\t/* 原厂顺序（2026-11-26 起默认；2026-11-27 回退：5/2/15 实测无改善 trig 且引入 ESD 重试/CMDQ 超时） */"
 D3_NEW = "\tdefault: d1 = 12; d2 = 12; d3 = 15; vsp_first = 1; break;\t/* S3PRO_VGP: RST 第三段对齐 LOS(15ms) */"
 
 

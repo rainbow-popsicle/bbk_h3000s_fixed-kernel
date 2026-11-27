@@ -29,7 +29,7 @@
 
 运行期（adb root 后）：
     echo 1 > /sys/kernel/debug/s3pro_lk/variant
-        0 = 当前默认（2026-11-27 对齐 LOS 14.1）：VSP -> VSN -> RST 5/2/15 -> 表
+        0 = 当前默认：VSP -> VSN -> RST 12/12/32 -> 表（原厂顺序；5/2/15 实测否定，保留在 case4 可选）
         1 = ★原驱动/LK 完整时序：VSP -> 12 -> VSN -> 24 -> RST 12/12/32 -> 表A
         2 = LK 纯复位时序：RST 12/12/32 -> VSP/VSN -> 表A
         3 = 原驱动顺序 + 加长延时：VSP -> 20 -> VSN -> 20 -> RST 20/20/50 -> 表A
@@ -172,7 +172,7 @@ NEW_RESUME = '''static void lcm_resume(void)
 	case 2:  d1 = 12; d2 = 12; d3 = 32; vsp_first = 0; break;	/* LK reset only */
 	case 3:  d1 = 20; d2 = 20; d3 = 50; vsp_first = 1; break;	/* original + longer */
 	case 4:  d1 = 5;  d2 = 2;  d3 = 15; vsp_first = 1; vsn_d = 15; break;	/* EXACT reference kernel */
-	default: d1 = 5;  d2 = 2;  d3 = 15; vsp_first = 1; vsn_d = 15; break;	/* LOS 14.1 实测（2026-11-27 对齐） */
+	default: d1 = 12; d2 = 12; d3 = 32; vsp_first = 1; break;	/* 原厂顺序（2026-11-26 起默认；2026-11-27 回退：5/2/15 实测无改善 trig 且引入 ESD 重试/CMDQ 超时） */
 	}
 	if (s3pro_lk_vsp_before == 1)
 		vsp_first = 1;
