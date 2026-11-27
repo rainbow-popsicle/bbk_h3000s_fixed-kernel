@@ -36,10 +36,6 @@ on:
         description: '面板推表诊断日志（pr_alert，查命令有没有发到面板；只加日志不改逻辑）'
         type: boolean
         default: false
-      lcm_power_seq:
-        description: '实验：反转面板 GPIO 上电顺序（先供电后复位，验证黑屏根因；默认关）'
-        type: boolean
-        default: false
       lcm_readid:
         description: '面板回读探针 mtk_lcm_s3pro_readback（切 CMD 后读 0x0A/0xDA/0xDB，读完切回）。用它可一刀切判断「面板到底还能不能通信」：0x0A 读回 0x9C=面板正常，0x00=面板没电/没初始化。黑屏排查期间建议保持开启（默认开）'
         type: boolean
@@ -61,10 +57,6 @@ on:
         description: '★★★★对齐 LOS：面板 1.8V 改走 MT6397 的 VGP4 LDO。反编译 LOS 14.1 DTB 确认 /soc/lcm 的 reg-lcm-1v8-supply=<0x42> 指向 ldo_vgp4（regulator-name "vgp4"）；设备实测它一直 disabled，而驱动只拉 GPIO（经 sed 实际是 ENP/pio96），所以面板从没拿到 1.8V，TPS65132 升不出 VPOS/VNEG。LOS 的做法是 regulator_enable + 20ms / regulator_disable（默认开）'
         type: boolean
         default: true
-      dsi_config_start:
-        description: '[已证伪·默认关] 在 ddp_dsi_config 出口补 DSI_Start。2026-11-25 实测：config 阶段 DSI_MODE_CTRL.MODE 还是 CMD(0)，此时启动 DSI 会让它进入 busy，而 _dsi_is_video_mode() 读寄存器返回 0 → DSI_WaitForNotBusy 走等待路径超时 #572 次；更严重的是 ddp_dsi_stop 里两个 while(1) 死等 busy 清除 → dsi1 is busy 反复打印 → suspend 卡死 → 黑屏。必须关闭'
-        type: boolean
-        default: false
       no_stop_loop:
         description: '★★★核心：让 primary_display_suspend 不再停 CMDQ trigger loop（LOS 14.1 逆向确认它不停）。停掉后 resume 重启的 loop 卡在 cmdqRecWait(MUTEX0_STREAM_EOF) 上死锁（默认开）'
         type: boolean
@@ -75,10 +67,6 @@ on:
         default: false
       lcm_init_table:
         description: '★★核心：让 lcm_init 做三级选表+推表（vendor id / pio89 电平 → 23/109 项），对齐 LOS 14.1；开机时 kernel 就推表而不是全靠 LK（默认开）'
-        type: boolean
-        default: true
-      lcm_esd_off:
-        description: '[默认开·临时] 关闭面板 ESD 自检。LOS 14.1 的 ESD 是开的且正常，但我们的显示异常时 display_esd_che 会反复 esd_recovery 干扰点火验证；显示修好后应关掉此项恢复对齐'
         type: boolean
         default: true
       lab_push:
@@ -154,17 +142,14 @@ jobs:
           TOOLCHAIN: ${{ inputs.toolchain || 'gcc49' }}
           DRY_RUN: ${{ (inputs.dry_run && '1') || '0' }}
           LCM_TRACE: ${{ (inputs.lcm_trace && '1') || '0' }}
-          LCM_POWER_SEQ: ${{ (inputs.lcm_power_seq && '1') || '0' }}
           LCM_READID: ${{ (inputs.lcm_readid && '1') || '0' }}
           STOCK_TIMING: ${{ (inputs.stock_timing && '1') || '0' }}
           RESUME_NO_WAIT_TOKEN: ${{ (inputs.resume_no_wait_token && '1') || '0' }}
           RESUME_ORDER: ${{ (inputs.resume_order && '1') || '0' }}
           LCM_VGP: ${{ (inputs.lcm_vgp && '1') || '0' }}
-          DSI_CFG_START: ${{ (inputs.dsi_config_start && '1') || '0' }}
           NO_STOP_LOOP: ${{ (inputs.no_stop_loop && '1') || '0' }}
           VDO_EOF_EVENT: ${{ (inputs.vdo_eof_event && '1') || '0' }}
           LCM_INIT_TABLE: ${{ (inputs.lcm_init_table && '1') || '0' }}
-          LCM_ESD_OFF: ${{ (inputs.lcm_esd_off && '1') || '0' }}
           LAB_PUSH: ${{ (inputs.lab_push && '1') || '0' }}
           LK_REPLAY: ${{ (inputs.lk_replay && '1') || '0' }}
         run: bash scripts/build.sh
