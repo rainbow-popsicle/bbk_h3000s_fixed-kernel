@@ -46,6 +46,7 @@ DRV_CHAIN = [
     ('patch_lk_replay.py', []),
     ('patch_stock_timing.py', []),
     ('patch_lcm_readid.py', []),
+    ('patch_lcm_regulator.py', []),
 ]
 
 
@@ -111,6 +112,24 @@ def audit_driver(path):
     chk('readback 定义唯一', n_rb == 1, '定义 %d 次' % n_rb)
     chk('readback 回读 0x0A', 'read_reg_v2(0x0A' in c)
     chk('readback 回读 0xDA/0xDB', 'read_reg_v2(0xDA' in c and 'read_reg_v2(0xDB' in c)
+
+    # ---- S3PRO_VGP：面板 1.8V 走 MT6397 VGP4 LDO（对齐 LOS 14.1）----
+    chk('VGP 头文件', '#include <linux/regulator/consumer.h>' in c)
+    chk('VGP extern 声明', 'extern struct regulator *s3pro_lcm_vgp;' in c)
+    chk('resume_power 调 regulator_enable', 'regulator_enable(s3pro_lcm_vgp)' in c)
+    chk('suspend_power 调 regulator_disable', 'regulator_disable(s3pro_lcm_vgp)' in c)
+    chk('VGP 设到 1.8V', '1800000, 1800000' in c)
+    chk('RST 第三段对齐 LOS(15ms)', 'd3 = 15;' in c)
+    # 顺序：suspend_power 里 VSN↓ < VSP↓ < regulator_disable < RST↓
+    i_vsn = c.find('lcm_set_gpio_output(GPIO_LCD_VSN_EN, GPIO_OUT_ZERO)')
+    i_vsp = c.find('lcm_set_gpio_output(GPIO_LCD_VSP_EN, GPIO_OUT_ZERO)')
+    i_dis = c.find('regulator_disable(s3pro_lcm_vgp)')
+    i_rst = c.find('lcm_set_gpio_output(GPIO_LCD_RST_EN, GPIO_OUT_ZERO)')
+    chk('suspend 顺序 VSN<VSP<disable<RST',
+        0 < i_vsn < i_vsp < i_dis < i_rst,
+        '%d/%d/%d/%d' % (i_vsn, i_vsp, i_dis, i_rst))
+    chk('S3PRO_VGP 标记在 pr_alert 里',
+        'pr_alert("[S3PRO_VGP]' in c)
 
     # ---- keep_power 开关（suspend 不断电，用于验证断电假设）----
     chk('keep_power 变量存在', 's3pro_keep_power' in c)

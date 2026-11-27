@@ -64,6 +64,7 @@ REQUIRED_MARKS = {
     "patch_dsi_config_start.py": "S3PRO_DSI_CFG_START",
     "patch_resume_no_wait_token.py": "S3PRO_NO_WAIT_TOKEN",
     "patch_disp_debug.py": "S3PRO_PATH",
+    "patch_lcm_regulator.py": "S3PRO_VGP",
 }
 
 # 驱动目录 Makefile（复制自内核树 drivers/misc/mediatek/lcm/<panel>/Makefile）
